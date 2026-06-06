@@ -10,7 +10,7 @@ let project = Project(
     packages: [
         .remote(
             url: "https://github.com/UnpxreTW/SwiftStyleKit",
-            requirement: .upToNextMajor(from: "1.1.1")
+            requirement: .upToNextMajor(from: "1.1.2")
         ),
         .remote(
             url: "https://github.com/apple/swift-argument-parser",

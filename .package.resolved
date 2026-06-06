@@ -1,13 +1,22 @@
 {
-  "originHash" : "38101cea434803396142c60e825f2aab3c3d213e25ef27832478ab9ef987927a",
+  "originHash" : "a66073d0bbd26934bddd0a8da8b2de181a28856ed6939f8e25e5bd09097fa5d4",
   "pins" : [
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
+      }
+    },
     {
       "identity" : "swiftstylekit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/UnpxreTW/SwiftStyleKit",
       "state" : {
-        "revision" : "de6dfc629bfc87e6b82b3ed644389d7f6c4ef45c",
-        "version" : "1.1.1"
+        "revision" : "ecaf21ceab4ad173fa520d88dcb32754212a7c48",
+        "version" : "1.1.2"
       }
     }
   ],

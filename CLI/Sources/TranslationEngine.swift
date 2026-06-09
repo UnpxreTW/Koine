@@ -1,3 +1,9 @@
+//
+//  koine
+//
+//  SPDX-FileCopyrightText: 2026 Unpxre (GitHub: UnpxreTW)
+//  SPDX-License-Identifier: MPL-2.0
+
 import Foundation
 
 /// 翻譯引擎基礎層介面。

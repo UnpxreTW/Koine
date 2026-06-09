@@ -18,17 +18,31 @@ let project = Project(
 		),
 	],
 	targets: [
-		// CLI 前端：給人類與 AI 工具（Claude Code）共用的 macOS 命令列工具。
-		// macOS native executable，不碰 simulator——繞開 CoreSimulator daemon blocker，
-		// 同時是驗證 TranslationSession standalone init 在 headless 環境跑通的最純 PoC。
+		// 核心庫：翻譯引擎與抽象層，供 CLI 與日後 app / extension 共用。
 		.target(
-			name: "koine",
+			name: "Koine",
+			destinations: .macOS,
+			product: .staticFramework,
+			bundleId: "me.unpxre.koine.core",
+			deploymentTargets: .macOS("26.0"),
+			sources: ["Sources/Koine/**/*.swift"],
+			dependencies: [
+				.package(product: "SwiftStyleLint", type: .plugin),
+			]
+		),
+		// CLI 包裝：argument-parser 入口，委派核心 Koine。
+		// target 名 KoineCLI——避開與核心庫 Koine 在大小寫不敏感檔案系統的建置目錄 / 模組碰撞；
+		// 執行檔名以 productName 固定為 koine，命令名由 CommandConfiguration 固定為 koine。
+		.target(
+			name: "KoineCLI",
 			destinations: .macOS,
 			product: .commandLineTool,
+			productName: "koine",
 			bundleId: "me.unpxre.koine.cli",
 			deploymentTargets: .macOS("26.0"),
-			sources: ["CLI/Sources/**/*.swift"],
+			sources: ["Sources/CLI/**/*.swift"],
 			dependencies: [
+				.target(name: "Koine"),
 				.package(product: "ArgumentParser"),
 				.package(product: "SwiftStyleLint", type: .plugin),
 			]

@@ -6,9 +6,9 @@ Apple 原生 on-device 翻譯 Safari Web Extension。
 
 ## 這是什麼
 
-雅言是一個純 Apple 生態、資料不離機的網頁翻譯擴充：
+雅言是一個純 Apple 生態、隱私優先的網頁翻譯擴充：
 
-- **基礎翻譯**用 Apple Translation Framework — 100% on-device、零成本、隱私第一
+- **基礎翻譯**用 Apple Translation Framework — 語言包下載後 100% on-device、零成本；未裝語言包即中止（不自動下載、不靜默回退雲端）
 - **上下文優化**（規劃中）用 Foundation Models 在基礎譯文上潤飾 — 保留語氣、術語一致、不亂翻程式碼
 - 整頁雙語對照，譯文排在原文下方
 

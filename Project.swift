@@ -18,6 +18,53 @@ let project = Project(
 		),
 	],
 	targets: [
+		// Host App：Safari Web Extension 的容器殼（引導啟用、提示語言包），翻譯本體在 Extension。
+		// PoC 1 先 macOS 起手——本機 Safari 最短路徑驗 NSExtension 內翻譯通路；iOS target 待 PoC 過後加。
+		.target(
+			name: "KoineApp",
+			destinations: .macOS,
+			product: .app,
+			bundleId: "me.unpxre.koine",
+			deploymentTargets: .macOS("26.0"),
+			infoPlist: .extendingDefault(with: [
+				"CFBundleDisplayName": "雅言",
+			]),
+			sources: ["Sources/App/**/*.swift"],
+			entitlements: .dictionary([
+				"com.apple.security.app-sandbox": true,
+			]),
+			dependencies: [
+				.target(name: "KoineExtension"),
+				.package(product: "SwiftStyleLint", type: .plugin),
+			]
+		),
+		// Safari Web Extension：native handler 委派核心 Koine 翻譯（PoC 1 驗證標的）。
+		// 核心源檔直接掛進本 target（源碼級共用）：Tuist graph linter 不支援
+		// appExtension → staticFramework 依賴組合；同一份源檔、無重複，待日後評
+		// dynamic framework（appex 與 app 共用 embed）或 local SPM package 再恢復 module 邊界。
+		.target(
+			name: "KoineExtension",
+			destinations: .macOS,
+			product: .appExtension,
+			bundleId: "me.unpxre.koine.Extension",
+			deploymentTargets: .macOS("26.0"),
+			infoPlist: .extendingDefault(with: [
+				"CFBundleDisplayName": "雅言",
+				"NSExtension": [
+					"NSExtensionPointIdentifier": "com.apple.Safari.web-extension",
+					"NSExtensionPrincipalClass": "$(PRODUCT_MODULE_NAME).SafariWebExtensionHandler",
+				],
+			]),
+			sources: ["Sources/Extension/**/*.swift", "Sources/Koine/**/*.swift"],
+			resources: ["Sources/Extension/Resources/**"],
+			// App Extension 硬性要求 App Sandbox——缺它 pluginkit 直接拒收、Safari 看不到擴充。
+			entitlements: .dictionary([
+				"com.apple.security.app-sandbox": true,
+			]),
+			dependencies: [
+				.package(product: "SwiftStyleLint", type: .plugin),
+			]
+		),
 		// 核心庫：翻譯引擎與抽象層，供 CLI 與日後 app / extension 共用。
 		.target(
 			name: "Koine",
@@ -50,6 +97,14 @@ let project = Project(
 				.package(product: "SwiftStyleLint", type: .plugin),
 			],
 			settings: .settings(base: ["PRODUCT_MODULE_NAME": "KoineCLI"])
+		),
+	],
+	// Tuist 自動 scheme 生成漏了 KoineApp（KoineExtension / KoineCLI 都有）——顯式宣告補上。
+	schemes: [
+		.scheme(
+			name: "KoineApp",
+			buildAction: .buildAction(targets: ["KoineApp"]),
+			runAction: .runAction(executable: "KoineApp")
 		),
 	]
 )

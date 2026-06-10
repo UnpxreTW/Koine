@@ -33,6 +33,9 @@ let project = Project(
 		// CLI 包裝：argument-parser 入口，委派核心 Koine。
 		// target 名 KoineCLI——避開與核心庫 Koine 在大小寫不敏感檔案系統的建置目錄 / 模組碰撞；
 		// 執行檔名以 productName 固定為 koine，命令名由 CommandConfiguration 固定為 koine。
+		// PRODUCT_MODULE_NAME 須顯式設回 KoineCLI：否則從 productName 推導出 module 名 koine，
+		// 其 koine.swiftmodule 落在 build products 平面目錄、incremental build 時 `import Koine`
+		// 大小寫不敏感誤中而炸 "cannot load module 'koine' as 'Koine'"（clean build 看不到）。
 		.target(
 			name: "KoineCLI",
 			destinations: .macOS,
@@ -45,7 +48,8 @@ let project = Project(
 				.target(name: "Koine"),
 				.package(product: "ArgumentParser"),
 				.package(product: "SwiftStyleLint", type: .plugin),
-			]
+			],
+			settings: .settings(base: ["PRODUCT_MODULE_NAME": "KoineCLI"])
 		),
 	]
 )

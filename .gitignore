@@ -18,6 +18,6 @@ DerivedData/
 # macOS
 .DS_Store
 
-# 本機 LSP / 編輯器工具產物（每人各自生成、不進 git）
+# 本機 LSP / 編輯器工具產物
 .nvim/
 buildServer.json

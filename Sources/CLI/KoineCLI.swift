@@ -14,6 +14,7 @@ import Koine
 /// 非互動時絕不 prompt。`--json` opt-in 給需要結構化輸出的呼叫端。
 @main
 struct KoineCLI: AsyncParsableCommand {
+
 	static let configuration = CommandConfiguration(
 		commandName: "koine",
 		abstract: "雅言 — Apple Translation 的命令列前端（on-device、零成本）。",

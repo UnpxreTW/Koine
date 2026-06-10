@@ -13,6 +13,7 @@ import Foundation
 ///
 /// 目前採單句 `String` 簽名；整篇批次（`translate(batch:)`）待後續擴充。
 public protocol TranslationEngine {
+
 	func translate(
 		_ text: String,
 		from source: Locale.Language,

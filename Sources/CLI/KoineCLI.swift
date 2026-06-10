@@ -46,11 +46,27 @@ struct KoineCLI: AsyncParsableCommand {
 		}
 
 		let engine = AppleTranslationEngine()
-		let translated = try await engine.translate(
-			input,
-			from: Locale.Language(identifier: fromLanguage),
-			to: Locale.Language(identifier: toLanguage)
-		)
+		let source = Locale.Language(identifier: fromLanguage)
+		let target = Locale.Language(identifier: toLanguage)
+
+		// 預查語言組合：standalone init 不 throws、失敗會延到 translate 才爆出
+		// 不可讀的 framework error——預查把兩種常見失敗轉成可行動訊息。
+		switch await engine.status(from: source, to: target) {
+		case .installed:
+			break
+		case .supported:
+			throw RuntimeError(
+				"語言包未下載（\(fromLanguage) → \(toLanguage)）。"
+					+ "請至「系統設定 → 一般 → 語言與地區 → 翻譯語言」下載後再試。"
+			)
+		case .unsupported:
+			throw RuntimeError(
+				"不支援的語言組合：\(fromLanguage) → \(toLanguage)。"
+					+ "請確認語言碼（BCP-47，如 en、zh-Hant、ja）。"
+			)
+		}
+
+		let translated = try await engine.translate(input, from: source, to: target)
 
 		if json {
 			let payload = ["source": fromLanguage, "target": toLanguage, "text": translated]
@@ -61,12 +77,35 @@ struct KoineCLI: AsyncParsableCommand {
 		}
 	}
 
-	/// 位置參數優先；否則讀 stdin（管線 / 重導向）。兩者皆空回空字串、由呼叫端報錯。
+	/// 位置參數優先；否則讀 stdin（管線 / 重導向）。空輸入回空字串、由呼叫端報錯。
 	private func resolveInput() throws -> String {
 		if let text {
 			return text.trimmingCharacters(in: .whitespacesAndNewlines)
 		}
+		// 互動 TTY 且無位置參數：不會有管線輸入，直接報錯——
+		// 否則 readDataToEndOfFile() 會無提示阻塞到 Ctrl-D、看起來像當機。
+		guard isatty(FileHandle.standardInput.fileDescriptor) == 0 else {
+			throw ValidationError("沒有輸入文字。提供位置參數或從 stdin 餵入。")
+		}
 		let data = FileHandle.standardInput.readDataToEndOfFile()
-		return (String(bytes: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !data.isEmpty else {
+			return ""
+		}
+		// 區分「沒給輸入」與「給了但解不開」：非 UTF-8 不可吞成空字串誤報為無輸入。
+		guard let input = String(bytes: data, encoding: .utf8) else {
+			throw RuntimeError("輸入不是有效的 UTF-8 文字。")
+		}
+		return input.trimmingCharacters(in: .whitespacesAndNewlines)
+	}
+}
+
+/// 執行期錯誤：以 `Error: <description>` 印到 stderr、exit 1，不附 usage
+/// （usage 留給 `ValidationError` 的參數類錯誤）。
+private struct RuntimeError: Error, CustomStringConvertible {
+
+	let description: String
+
+	init(_ description: String) {
+		self.description = description
 	}
 }

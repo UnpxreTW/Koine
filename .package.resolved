@@ -1,0 +1,24 @@
+{
+  "originHash" : "a66073d0bbd26934bddd0a8da8b2de181a28856ed6939f8e25e5bd09097fa5d4",
+  "pins" : [
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
+      }
+    },
+    {
+      "identity" : "swiftstylekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/UnpxreTW/SwiftStyleKit",
+      "state" : {
+        "revision" : "9880b8c4d80e87b76d693b2bb3a9c9de5895a6c5",
+        "version" : "1.2.0"
+      }
+    }
+  ],
+  "version" : 3
+}

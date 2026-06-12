@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "雅言 Koine",
+  "version": "0.0.1",
+  "description": "Apple 原生 on-device 翻譯 Safari Web Extension。",
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["nativeMessaging"]
+}

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Unpxre (GitHub: UnpxreTW)
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: Apache-2.0
 //
 // Content script — 注入每個頁面。
 // 現階段先做最小通路驗證：抓第一段文字送去翻譯、log 回傳結果。

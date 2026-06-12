@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Unpxre (GitHub: UnpxreTW)
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: Apache-2.0
 //
 // 背景腳本：MV3 但用 background.scripts + persistent:false
 // （Apple Dev Forum 工程師建議：iOS Safari 的 MV3 service_worker 不穩定）。

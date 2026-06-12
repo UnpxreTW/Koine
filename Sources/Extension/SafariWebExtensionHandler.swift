@@ -12,12 +12,8 @@ private let logger = Logger(subsystem: "me.unpxre.koine", category: "extension")
 
 /// Safari Web Extension 的 native handler。
 ///
-/// **PoC 1**：驗證翻譯能否在這個 `NSExtension` 子進程（無 SwiftUI scene / lifecycle）內
-/// end-to-end 跑通。API 形式與 `translationd` 可達性已由 `koine` CLI 在 bare process
-/// 實證（2026-06-10）；本 PoC 只剩「NSExtension 沙箱環境」這一個變因——通過則 v1
-/// 引擎策略成立，失敗則退回 main app bridge 或重評雲端 fallback。
-///
-/// 翻譯本體委派核心庫 `AppleTranslationEngine`，與 CLI 共用同一條路徑。
+/// 翻譯本體委派核心庫 `AppleTranslationEngine`，與 CLI 共用同一條路徑；
+/// 在 NSExtension 子進程（無 SwiftUI scene / lifecycle）內直連 `translationd`。
 class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
 	func beginRequest(with context: NSExtensionContext) {
@@ -40,10 +36,10 @@ class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 					from: Locale.Language(identifier: source),
 					to: Locale.Language(identifier: target)
 				)
-				logger.log("PoC 1 OK: \(translated, privacy: .public)")
+				logger.log("翻譯完成: \(translated, privacy: .public)")
 				respond(context, with: ["translated": translated])
 			} catch {
-				logger.error("PoC 1 FAIL: \(error.localizedDescription, privacy: .public)")
+				logger.error("翻譯失敗: \(error.localizedDescription, privacy: .public)")
 				respond(context, with: ["error": error.localizedDescription])
 			}
 		}

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Content script — 注入每個頁面。
-// PoC 1 階段先做最小通路驗證：抓第一段文字送去翻譯、log 回傳結果。
-// M2 之後換成整頁 DOM 三 Observer（TreeWalker + IntersectionObserver +
+// 現階段先做最小通路驗證：抓第一段文字送去翻譯、log 回傳結果。
+// 後續換成整頁 DOM 三 Observer（TreeWalker + IntersectionObserver +
 // MutationObserver）+ <font> wrapper 雙語對照。
 
 (async () => {

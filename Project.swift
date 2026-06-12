@@ -19,7 +19,7 @@ let project = Project(
 	],
 	targets: [
 		// Host App：Safari Web Extension 的容器殼（引導啟用、提示語言包），翻譯本體在 Extension。
-		// PoC 1 先 macOS 起手——本機 Safari 最短路徑驗 NSExtension 內翻譯通路；iOS target 待 PoC 過後加。
+		// 先 macOS 起手——以本機 Safari 最短路徑驗證 NSExtension 內翻譯通路；iOS target 後續加入。
 		.target(
 			name: "KoineApp",
 			destinations: .macOS,
@@ -38,7 +38,7 @@ let project = Project(
 				.package(product: "SwiftStyleLint", type: .plugin),
 			]
 		),
-		// Safari Web Extension：native handler 委派核心 Koine 翻譯（PoC 1 驗證標的）。
+		// Safari Web Extension：native handler 委派核心 Koine 翻譯。
 		// 核心源檔直接掛進本 target（源碼級共用）：Tuist graph linter 不支援
 		// appExtension → staticFramework 依賴組合；同一份源檔、無重複，待日後評
 		// dynamic framework（appex 與 app 共用 embed）或 local SPM package 再恢復 module 邊界。

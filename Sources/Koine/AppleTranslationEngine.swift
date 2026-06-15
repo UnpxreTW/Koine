@@ -1,8 +1,10 @@
 //
 //  Koine
 //
-//  SPDX-FileCopyrightText: 2026 Unpxre (GitHub: UnpxreTW)
-//  SPDX-License-Identifier: MPL-2.0
+//  Copyright © 2026 Unpxre (GitHub: UnpxreTW)
+//  Licensed under the Functional Source License 1.1. See LICENSE for details.
+//
+//  SPDX-License-Identifier: FSL-1.1-ALv2
 
 import Foundation
 import Translation

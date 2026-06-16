@@ -9,11 +9,11 @@
 // （sendNativeMessage 的 callback 在 iOS 不穩）。
 
 browser.runtime.onMessage.addListener(async (message) => {
-  try {
-    const response = await browser.runtime.sendNativeMessage("application.id", message);
-    return response;
-  } catch (error) {
-    console.error("[雅言] native message 失敗:", error);
-    return { error: String(error) };
-  }
+	try {
+		const response = await browser.runtime.sendNativeMessage("application.id", message);
+		return response;
+	} catch (error) {
+		console.error("[雅言] native message 失敗:", error);
+		return { error: String(error) };
+	}
 });

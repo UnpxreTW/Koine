@@ -1,5 +1,6 @@
 # REUSE 設定：批次涵蓋無法掛 inline SPDX header 的 manifest / 設定 / 鎖定 / 文件檔。
-# 已掛 header 的 .swift 原始碼不在此列；授權全文見 LICENSES/MPL-2.0.txt。
+# 已掛 header 的 .swift 原始碼不在此列（核心 Sources/Koine 走 FSL-1.1-ALv2、CLI 殼 Sources/CLI 走 Apache-2.0）；
+# 授權全文見 LICENSES/。
 version = 1
 
 [[annotations]]
@@ -15,4 +16,4 @@ path = [
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Unpxre (GitHub: UnpxreTW)"
-SPDX-License-Identifier = "MPL-2.0"
+SPDX-License-Identifier = "Apache-2.0"

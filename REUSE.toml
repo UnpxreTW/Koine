@@ -11,6 +11,7 @@ path = [
 	"AUTHORS",
 	"Project.swift",
 	"README.md",
+	"Sources/Extension/Resources/manifest.json",
 	"docs/CODEOWNERS",
 	"docs/SECURITY.md",
 ]

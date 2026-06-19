@@ -9,17 +9,6 @@
 import Foundation
 import Translation
 
-/// 語言組合的可用狀態（包裝 `LanguageAvailability.Status`，讓呼叫端不必依賴 Translation）。
-public enum LanguagePairStatus {
-
-	/// 語言包已就緒、可直接翻譯。
-	case installed
-	/// 組合受支援、但語言包尚未下載。
-	case supported
-	/// 不支援的組合（含無法識別的語言碼——`Locale.Language(identifier:)` 對亂碼不會失敗）。
-	case unsupported
-}
-
 /// Apple Translation Framework 實作（基礎層、v1）。
 ///
 /// 走 macOS 26 standalone init `TranslationSession(installedSource:target:)`，無 SwiftUI

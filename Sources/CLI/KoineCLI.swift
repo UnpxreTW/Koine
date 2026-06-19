@@ -46,11 +46,9 @@ struct KoineCLI: AsyncParsableCommand {
 		guard !input.isEmpty else {
 			throw ValidationError("沒有輸入文字。提供位置參數或從 stdin 餵入。")
 		}
-
 		let engine = AppleTranslationEngine()
 		let source = Locale.Language(identifier: fromLanguage)
 		let target = Locale.Language(identifier: toLanguage)
-
 		// 預查語言組合：standalone init 不 throws、失敗會延到 translate 才爆出
 		// 不可讀的 framework error——預查把兩種常見失敗轉成可行動訊息。
 		switch await engine.status(from: source, to: target) {
@@ -58,18 +56,20 @@ struct KoineCLI: AsyncParsableCommand {
 			break
 		case .supported:
 			throw RuntimeError(
-				"語言包未下載（\(fromLanguage) → \(toLanguage)）。"
-					+ "請至「系統設定 → 一般 → 語言與地區 → 翻譯語言」下載後再試。"
+				"""
+				語言包未下載（\(fromLanguage) → \(toLanguage)）。\
+				請至「系統設定 → 一般 → 語言與地區 → 翻譯語言」下載後再試。
+				"""
 			)
 		case .unsupported:
 			throw RuntimeError(
-				"不支援的語言組合：\(fromLanguage) → \(toLanguage)。"
-					+ "請確認語言碼（BCP-47，如 en、zh-Hant、ja）。"
+				"""
+				不支援的語言組合：\(fromLanguage) → \(toLanguage)。\
+				請確認語言碼（BCP-47，如 en、zh-Hant、ja）。
+				"""
 			)
 		}
-
 		let translated = try await engine.translate(input, from: source, to: target)
-
 		if json {
 			let payload = ["source": fromLanguage, "target": toLanguage, "text": translated]
 			let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -98,16 +98,5 @@ struct KoineCLI: AsyncParsableCommand {
 			throw RuntimeError("輸入不是有效的 UTF-8 文字。")
 		}
 		return input.trimmingCharacters(in: .whitespacesAndNewlines)
-	}
-}
-
-/// 執行期錯誤：以 `Error: <description>` 印到 stderr、exit 1，不附 usage
-/// （usage 留給 `ValidationError` 的參數類錯誤）。
-private struct RuntimeError: Error, CustomStringConvertible {
-
-	let description: String
-
-	init(_ description: String) {
-		self.description = description
 	}
 }

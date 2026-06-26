@@ -1,3 +1,5 @@
-# 釘住 Tuist 版本，跨機 / CI 一致（與全域 mise 安裝對齊）
+# 釘住工具版本，跨機 / CI 一致（與全域 mise 安裝對齊）
 [tools]
 tuist = "4.195.16"
+# 採集層 JS 工具鏈（node --test 跑道 A/B、bench）；釘 LTS 主版，mise 取最新 24.x
+node = "24"

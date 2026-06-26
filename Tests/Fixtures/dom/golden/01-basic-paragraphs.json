@@ -1,0 +1,4 @@
+[
+	{ "order": 0, "source": "First paragraph.", "state": "pending" },
+	{ "order": 1, "source": "Second paragraph.", "state": "pending" }
+]

@@ -1,0 +1,4 @@
+[
+	{ "order": 0, "source": "Visible text.", "state": "pending" },
+	{ "order": 1, "source": "More text.", "state": "pending" }
+]

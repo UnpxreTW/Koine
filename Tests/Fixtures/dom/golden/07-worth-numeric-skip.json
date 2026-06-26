@@ -1,0 +1,4 @@
+[
+	{ "order": 0, "source": "404", "state": "skipped", "skipReason": "numeric" },
+	{ "order": 1, "source": "Real content here.", "state": "pending" }
+]

@@ -1,69 +1,99 @@
-// SPDX-FileCopyrightText: 2026 Unpxre (GitHub: UnpxreTW)
-// SPDX-License-Identifier: Apache-2.0
 //
-// 採集層跑道 B（WKWebView / 真 WebKit）：載 fixture HTML → 注入 content.js（universal script，
-// 設 globalThis.__koine__、main() 因無 browser API 不自動跑）→ driver 以「真」getComputedStyle
-// 跑 collectSegments → JSON 回 Swift 比對 golden。fixture / golden / content.js 由 #filePath 相對
-// 讀源檔本身（本機 dev 測試，非 CI 攜帶）。
+//  KoineDOMTests
+//
+//  Copyright © 2026 Unpxre (GitHub: UnpxreTW)
+//  Licensed under the Apache License 2.0. See LICENSES/Apache-2.0.txt for details.
+//
+//  SPDX-License-Identifier: Apache-2.0
 
 import WebKit
 import XCTest
 
-// MARK: - golden / manifest 型別（對齊跑道 A normalize 形狀）
-
+/// 比對用 protected span：`code` / `time` 等不可分割原子在 source 字串內的字元範圍。
 private struct ProtectedSpan: Decodable, Equatable {
+
+	/// 原子在 source 內的起始字元 offset。
 	let start: Int
+
+	/// 原子在 source 內的結束字元 offset（exclusive）。
 	let end: Int
+
+	/// 原子種類（`code` / `time`）。
 	let kind: String
 }
 
+/// golden 比對形狀：對齊跑道 A `helpers.normalize`（留 order / source / state，丟 anchor 與 id）。
 private struct NormSeg: Decodable, Equatable {
+
+	/// 文件序連號。
 	let order: Int
+
+	/// 段落原文（空白正規化後）。
 	let source: String
+
+	/// 段落狀態（`pending` / `skipped` 等）。
 	let state: String
+
+	/// `skipped` 段的略過原因；非 skipped 為 nil。
 	let skipReason: String?
+
+	/// 段內 protected span 清單；無則 nil。
 	let protectedSpans: [ProtectedSpan]?
 }
 
+/// fixture 清單（`manifest.json` 解碼）。
 private struct Manifest: Decodable {
+
+	/// 單一 fixture 條目。
 	struct Case: Decodable {
+
+		/// fixture 檔名（不含副檔名）。
 		let name: String
+
+		/// 所屬跑道（`a` / `b` / `both`）。
 		let lane: String
+
+		/// 人類可讀說明。
 		let desc: String
 	}
 
+	/// 全部 fixture 條目。
 	let cases: [Case]
 }
 
-// MARK: - 來源路徑（#filePath → repo root）
-
+/// 來源路徑解析：`#filePath` → repo root，再相對取 content.js / fixture / golden / manifest。
 private enum Source {
-	// #filePath = <repo>/Tests/KoineDOMTests/CollectWebKitTests.swift
+
+	/// repo root：`#filePath` = `<repo>/Tests/KoineDOMTests/CollectWebKitTests.swift`，往上三層。
 	static let repoRoot = URL(filePath: #filePath)
 		.deletingLastPathComponent() // KoineDOMTests
 		.deletingLastPathComponent() // Tests
 		.deletingLastPathComponent() // <repo>
 
+	/// 讀注入 WKWebView 的採集層腳本 content.js。
 	static func contentJS() throws -> String {
 		try String(contentsOf: repoRoot.appending(path: "Sources/Extension/Resources/content.js"), encoding: .utf8)
 	}
 
+	/// 讀指定 fixture 的 HTML。
 	static func fixtureHTML(_ name: String) throws -> String {
 		try String(contentsOf: repoRoot.appending(path: "Tests/Fixtures/dom/cases/\(name).html"), encoding: .utf8)
 	}
 
+	/// 讀並解碼指定 fixture 的 golden。
 	static func golden(_ name: String) throws -> [NormSeg] {
 		let data = try Data(contentsOf: repoRoot.appending(path: "Tests/Fixtures/dom/golden/\(name).json"))
 		return try JSONDecoder().decode([NormSeg].self, from: data)
 	}
 
+	/// 讀並解碼 fixture 清單。
 	static func manifest() throws -> Manifest {
 		let data = try Data(contentsOf: repoRoot.appending(path: "Tests/Fixtures/dom/manifest.json"))
 		return try JSONDecoder().decode(Manifest.self, from: data)
 	}
 }
 
-// driver：以真 getComputedStyle 跑採集、回 normalize 後 JSON（與跑道 A helpers.normalize 同欄位）。
+/// driver：以真 `getComputedStyle` 跑採集、回 normalize 後 JSON（與跑道 A `helpers.normalize` 同欄位）。
 private let driverJS = """
 (() => {
   const k = globalThis.__koine__;
@@ -78,21 +108,27 @@ private let driverJS = """
 })();
 """
 
-// MARK: - WKNavigationDelegate（loadHTMLString 完成回呼）
-
+/// `loadHTMLString` 完成回呼橋接（`navigationDelegate` 為 weak，呼叫端需保強參考至完成）。
 private final class NavDelegate: NSObject, WKNavigationDelegate {
+
+	/// 導航完成時觸發。
 	var onFinish: (() -> Void)?
 
+	/// `WKNavigationDelegate`：導航完成回呼。
 	func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
 		onFinish?()
 	}
 }
 
-// MARK: - 測試
-
+/// 採集層跑道 B（WKWebView / 真 WebKit）：載 fixture HTML → 注入 content.js（universal script，
+/// 設 `globalThis.__koine__`、`main()` 因無 browser API 不自動跑）→ driver 以真 `getComputedStyle`
+/// 跑 `collectSegments` → JSON 回 Swift 比對 golden。
+///
+/// fixture / golden / content.js 由 `#filePath` 相對讀源檔本身（本機 dev 測試、非 CI 攜帶）。
 @MainActor
 final class CollectWebKitTests: XCTestCase {
 
+	/// 載入 HTML 並 await 導航完成（保留 delegate 強參考至完成）。
 	private func load(_ webView: WKWebView, html: String) async {
 		let delegate = NavDelegate()
 		webView.navigationDelegate = delegate
@@ -104,6 +140,7 @@ final class CollectWebKitTests: XCTestCase {
 		withExtendedLifetime(delegate) {}
 	}
 
+	/// 載入指定 fixture、注入 content.js、跑 driver，回 normalize 後段落。
 	private func collect(fixture name: String) async throws -> [NormSeg] {
 		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
 		await load(webView, html: try Source.fixtureHTML(name))
@@ -112,28 +149,32 @@ final class CollectWebKitTests: XCTestCase {
 		return try JSONDecoder().decode([NormSeg].self, from: Data(json.utf8))
 	}
 
-	// 所有 lane b / both fixture：真 WebKit 採集對齊 golden（§11.1 both case 過同一份 golden）。
+	/// 所有 lane b / both fixture：真 WebKit 採集對齊 golden（§11.1 both case 過同一份 golden）。
 	func testFixturesAgainstGolden() async throws {
 		let cases = try Source.manifest().cases.filter { $0.lane == "b" || $0.lane == "both" }
 		XCTAssertFalse(cases.isEmpty, "manifest 無 b/both case")
-		for c in cases {
-			let got = try await collect(fixture: c.name)
-			let want = try Source.golden(c.name)
-			XCTAssertEqual(got, want, "fixture \(c.name)（\(c.desc)）與 golden 不符")
+		for testCase in cases {
+			let got = try await collect(fixture: testCase.name)
+			let want = try Source.golden(testCase.name)
+			XCTAssertEqual(got, want, "fixture \(testCase.name)（\(testCase.desc)）與 golden 不符")
 		}
 	}
 
-	// SPEC §1 實測基準 smoke：照抄者以此為準的關鍵值，對齊真 WebKit。
+	/// SPEC §1 實測基準 smoke：照抄者以此為準的關鍵值，對齊真 WebKit。
 	func testDisplayBaselineSmoke() async throws {
 		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
 		let html = "<div style='display:flex'><span id='ib' style='display:inline-block'>x</span></div>"
 			+ "<ruby>漢<rt id='rt'>k</rt></ruby>"
 		await load(webView, html: html)
-		let ib = try await webView.evaluateJavaScript(
+		let inlineBlockDisplay = try await webView.evaluateJavaScript(
 			"getComputedStyle(document.getElementById('ib')).display") as? String
-		let rt = try await webView.evaluateJavaScript(
+		let rubyTextDisplay = try await webView.evaluateJavaScript(
 			"getComputedStyle(document.getElementById('rt')).display") as? String
-		XCTAssertEqual(ib, "block", "inline-block 在 flex 容器內被 blockify（SPEC §1 A1）")
-		XCTAssertEqual(rt, "ruby-text", "rt → ruby-text（真 WKWebView/系統 WebKit 實證；SPEC §1 A3 的 Playwright 值 inline 在系統 WebKit 不成立）")
+		XCTAssertEqual(inlineBlockDisplay, "block", "inline-block 在 flex 容器內被 blockify（SPEC §1 A1）")
+		XCTAssertEqual(
+			rubyTextDisplay,
+			"ruby-text",
+			"rt → ruby-text（真 WKWebView/系統 WebKit 實證；SPEC §1 A3 的 Playwright 值 inline 在系統 WebKit 不成立）"
+		)
 	}
 }

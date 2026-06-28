@@ -293,8 +293,11 @@ function hasSkipClass(el) {
 
 /** §3.5 translate="no" / .notranslate，大容器降級不尊重。 */
 function respectsTranslateNo(el) {
-	const no = el.translate === false
-		|| el.getAttribute("translate") === "no"
+	// 只看元素自身明示訊號（attribute / class）；不用 el.translate IDL——該屬性會繼承
+	// 祖先 translate="no"，使大容器降級放行後、內層非大容器子代仍被當 no 而整棵跳
+	// （真 WebKit 實證：跑道 B fixture 13 產空段；linkedom 不實作此 IDL 故跑道 A 抓不到）。
+	// 與 §3.6 lang「只看自身不繼承」一致；元素自帶 explicit translate=no 仍由 getAttribute 命中。
+	const no = el.getAttribute("translate") === "no"
 		|| el.classList.contains("notranslate");
 	if (!no) return false;
 	return !BULK_TRANSLATE_NO_TAGS.has(el.tagName);

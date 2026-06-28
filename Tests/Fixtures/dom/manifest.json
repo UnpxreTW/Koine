@@ -16,6 +16,10 @@
 		{ "name": "14-hidden-attr", "lane": "both", "desc": "hidden 屬性 → 整棵跳" },
 		{ "name": "15-comment-node", "lane": "both", "desc": "註解節點零寬、不切段" },
 		{ "name": "16-contenteditable", "lane": "both", "desc": "contenteditable → 安全紅線整棵跳" },
-		{ "name": "17-whitespace-only", "lane": "both", "desc": "純空白段不產段（連 skipped 都不建）" }
+		{ "name": "17-whitespace-only", "lane": "both", "desc": "純空白段不產段（連 skipped 都不建）" },
+		{ "name": "b01-css-block-spans", "lane": "b", "desc": "CSS display:block 蓋在 span → 各自成段（真 computed）" },
+		{ "name": "b02-css-display-none", "lane": "b", "desc": "CSS display:none → 整棵跳（真 computed）" },
+		{ "name": "b03-css-block-anchor", "lane": "b", "desc": "CSS display:block 蓋在 a → forceBlock 切三段（真 computed）" },
+		{ "name": "b04-display-contents", "lane": "b", "desc": "display:contents 容器 → 子 block 各自成段" }
 	]
 }

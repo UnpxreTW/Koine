@@ -94,6 +94,17 @@ let project = Project(
 			],
 			settings: .settings(base: ["PRODUCT_MODULE_NAME": "KoineCLI"])
 		),
+		// 採集層跑道 B：WKWebView（真 WebKit）載 fixture + 注入 content.js + 讀回 Segment JSON 比 golden。
+		// 測 computed-display 依賴規則（linkedom 跑道 A 無法涵蓋）。logic test、走 platform=macOS、不依賴 simulator。
+		// SwiftStyleLint plugin 暫不掛（dev 測試 target、非產出物，減少迭代摩擦）。
+		.target(
+			name: "KoineDOMTests",
+			destinations: .macOS,
+			product: .unitTests,
+			bundleId: "me.unpxre.koine.domtests",
+			deploymentTargets: .macOS("26.0"),
+			sources: ["Tests/KoineDOMTests/**/*.swift"]
+		),
 	],
 	// Tuist 自動 scheme 生成漏了 KoineApp（KoineExtension / KoineCLI 都有）——顯式宣告補上。
 	schemes: [

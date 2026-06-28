@@ -1,0 +1,4 @@
+[
+	{ "order": 0, "source": "Alpha block.", "state": "pending" },
+	{ "order": 1, "source": "Beta block.", "state": "pending" }
+]

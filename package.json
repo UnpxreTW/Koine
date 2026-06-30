@@ -1,0 +1,14 @@
+{
+	"name": "koine-dom",
+	"private": true,
+	"type": "module",
+	"description": "雅言 Koine — Safari Web Extension DOM 採集層工具鏈（node --test 跑道 A/B 與 benchmark；非發佈 npm 套件）",
+	"scripts": {
+		"test": "node --test Tests/dom/*.test.mjs",
+		"bench": "node Tools/bench.mjs",
+		"typecheck": "tsc --noEmit -p jsconfig.json"
+	},
+	"devDependencies": {
+		"linkedom": "^0.18.12"
+	}
+}

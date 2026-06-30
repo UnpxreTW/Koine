@@ -1,0 +1,20 @@
+{
+	"compilerOptions": {
+		"checkJs": true,
+		"allowJs": true,
+		"noEmit": true,
+		"target": "ES2023",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"strict": true,
+		"skipLibCheck": true,
+		"types": []
+	},
+	"include": [
+		"Sources/Extension/Resources/content.js",
+		"Sources/Extension/Resources/background.js",
+		"Tests/**/*.mjs",
+		"Tools/**/*.mjs"
+	]
+}

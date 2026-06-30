@@ -1,0 +1,25 @@
+{
+	"cases": [
+		{ "name": "01-basic-paragraphs", "lane": "both", "desc": "兩段 p → 兩段" },
+		{ "name": "02-mixed-inline", "lane": "both", "desc": "mixed inline 合併成一段" },
+		{ "name": "03-nested-div", "lane": "a", "desc": "深巢狀 div 不產空段（C2）" },
+		{ "name": "04-list-items", "lane": "both", "desc": "LI FORCE_BLOCK 每項一段" },
+		{ "name": "05-br-newline", "lane": "both", "desc": "br → 段內換行" },
+		{ "name": "06-skip-script-style", "lane": "both", "desc": "script/style 整棵跳" },
+		{ "name": "07-worth-numeric-skip", "lane": "both", "desc": "純數字段 skipped" },
+		{ "name": "08-code-opaque", "lane": "both", "desc": "code OPAQUE 併入 + protectedSpan" },
+		{ "name": "09-ruby", "lane": "both", "desc": "ruby 當 inline、rt 跳" },
+		{ "name": "10-already-target-lang", "lane": "both", "desc": "lang=zh-Hant 整棵跳" },
+		{ "name": "11-block-in-inline", "lane": "a", "desc": "inline 容器含 block 子 → forceBlock 上傳、兩遍 walk 切三段" },
+		{ "name": "12-translate-no-respect", "lane": "both", "desc": "translate=no 非大容器 → 尊重、整棵跳" },
+		{ "name": "13-translate-no-bulk", "lane": "both", "desc": "translate=no 在 article 大容器 → 降級不尊重" },
+		{ "name": "14-hidden-attr", "lane": "both", "desc": "hidden 屬性 → 整棵跳" },
+		{ "name": "15-comment-node", "lane": "both", "desc": "註解節點零寬、不切段" },
+		{ "name": "16-contenteditable", "lane": "both", "desc": "contenteditable → 安全紅線整棵跳" },
+		{ "name": "17-whitespace-only", "lane": "both", "desc": "純空白段不產段（連 skipped 都不建）" },
+		{ "name": "b01-css-block-spans", "lane": "b", "desc": "CSS display:block 蓋在 span → 各自成段（真 computed）" },
+		{ "name": "b02-css-display-none", "lane": "b", "desc": "CSS display:none → 整棵跳（真 computed）" },
+		{ "name": "b03-css-block-anchor", "lane": "b", "desc": "CSS display:block 蓋在 a → forceBlock 切三段（真 computed）" },
+		{ "name": "b04-display-contents", "lane": "b", "desc": "display:contents 容器 → 子 block 各自成段" }
+	]
+}

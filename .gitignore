@@ -21,3 +21,9 @@ DerivedData/
 # 本機 LSP / 編輯器工具產物
 .nvim/
 buildServer.json
+
+# Node / JS 採集層工具鏈（依賴與測試產物）
+node_modules/
+.playwright/
+playwright-report/
+test-results/

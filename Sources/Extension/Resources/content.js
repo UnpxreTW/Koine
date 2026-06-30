@@ -1,16 +1,580 @@
 // SPDX-FileCopyrightText: 2026 Unpxre (GitHub: UnpxreTW)
 // SPDX-License-Identifier: Apache-2.0
 //
-// Content script — 注入每個頁面。
+// 雅言 Koine — M1 DOM 採集層（content script，注入每個頁面）。
+//
+// 設計來源：SPEC-collect-layer（採集核心＝兩遍 walk + inline buffer flush、
+// 採集產物＝Segment IR、block/inline 判斷＝computed display + FORCE_BLOCK 白名單）。
+//
+// 通用腳本（universal script）：
+//   - Safari 載入為 classic content script（無 import/export 語法）。
+//   - node --test 以 ESM 副作用載入，純函式經 globalThis.__koine__ 取用。
+//   - 自動執行的 main() 用 typeof document/browser 守門，node 載入時不觸發。
+//   - getComputedStyle 一律走 ctx.getStyle 注入，跑道 A（linkedom）可餵 stub。
 
-(async () => {
+"use strict";
+
+// ============================================================================
+// §2.3 / §3.1 / §3.2 三張集合（照抄 Read Frog 原始值、不偷加）
+// ============================================================================
+
+/** §2.3 FORCE_BLOCK_TAGS — 白名單一律當 block（Read Frog 原始 25 個）。 */
+const FORCE_BLOCK_TAGS = new Set([
+	"BODY", "H1", "H2", "H3", "H4", "H5", "H6", "BR",
+	"FORM", "SELECT", "BUTTON", "LABEL", "UL", "OL", "LI",
+	"BLOCKQUOTE", "PRE", "ARTICLE", "SECTION", "FIGURE", "FIGCAPTION",
+	"HEADER", "FOOTER", "MAIN", "NAV",
+]);
+
+/** §3.1 SKIP_SUBTREE_TAGS — 整棵跳過、不採集不翻。 */
+const SKIP_SUBTREE_TAGS = new Set([
+	"SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE",
+	"TEXTAREA", "INPUT", "OPTION", "OPTGROUP",
+	"SVG", "CANVAS", "AUDIO", "VIDEO", "IMG", "SOURCE", "TRACK",
+	"IFRAME", "OBJECT", "EMBED",
+	"HEAD", "TITLE", "META", "LINK", "BASE",
+	"HR", "RT", "RP",
+]);
+
+/** §3.2 OPAQUE_INLINE_TAGS — 不展開、textContent 併入父段（不可分割原子）。 */
+const OPAQUE_INLINE_TAGS = new Set(["CODE", "TIME"]);
+
+/** §3.5 BULK_TRANSLATE_NO_TAGS — translate="no" 在大容器視為框架誤標、降級不尊重。 */
+const BULK_TRANSLATE_NO_TAGS = new Set(["BODY", "MAIN", "ARTICLE", "SECTION"]);
+
+/** §3.4 role 強制黑名單。 */
+const SKIP_ROLES = new Set([
+	"presentation", "none", "math", "progressbar", "slider",
+	"spinbutton", "scrollbar", "separator",
+]);
+
+// 三態節點處置（§0.1）。
+/** @typedef {'SKIP_SUBTREE'|'OPAQUE_INLINE'|'WALK'} NodeDisposition */
+
+const NODE_ELEMENT = 1;
+const NODE_TEXT = 3;
+const NODE_PI = 7;
+const NODE_COMMENT = 8;
+
+// ============================================================================
+// §2.1 block/inline 判斷收斂核心
+// ============================================================================
+
+/**
+ * 所有 display 最終歸三條：startsWith('inline') ∨ === 'contents' ∨ startsWith('ruby')，否則 block。
+ * @param {string} display
+ * @returns {boolean}
+ */
+function isInlineDisplay(display) {
+	if (!display) return false;
+	if (display.startsWith("inline")) return true; // inline / inline-block / inline-flex|grid|table
+	if (display === "contents") return true;        // §2.4 fallback 當 inline（透明穿透待升）
+	if (display.startsWith("ruby")) return true;    // 實際只 cover <ruby> 容器
+	return false;
+}
+
+/** @param {Element} el */
+function hasText(el) {
+	return el.textContent != null && el.textContent.trim().length > 0;
+}
+
+// ============================================================================
+// §4 worthTranslating 內容過濾（inline 合併後 source 送翻前的純函式 gate）
+// ============================================================================
+
+const RE_WHITESPACE_ONLY = /^\p{White_Space}*$/u;
+const RE_EMOJI_SHELL = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}️‍]/u;
+const RE_EMOJI_BODY = /^[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}️‍\p{White_Space}\p{P}\p{S}]*$/u;
+const RE_PUNCT_ONLY = /^[\p{P}\p{S}\p{White_Space}]+$/u;
+const RE_HAS_ALNUM = /[\p{L}\p{N}]/u;
+// §4.2 numeric-only（補 \p{No}\p{Nl} 進字符類與守門）。
+const RE_NUMERIC = /^[\p{Nd}\p{No}\p{Nl}\p{Sc}.,%+\-–—−:/()\p{White_Space}]+$/u;
+const RE_HAS_NUM = /[\p{Nd}\p{No}\p{Nl}]/u;
+const RE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+// §4.3 URL（每 branch 各自 \S+；bare-domain branch 末段 TLD 守門＝≥2 ASCII 字母，擋 v1.2.3 / U.S.A / e.g）。
+const RE_URL = /^(?:(?:https?:\/\/|ftp:\/\/|www\.)\S+|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:[/?#]\S*)?)$/iu;
+const RE_PATH = /^(?:\/|\.{1,2}\/|~\/|[a-z]:\\)\S*$/iu;
+const RE_HAS_LETTER = /\p{L}/u;
+const RE_HAS_HAN = /\p{Script=Han}/u;
+const RE_HAS_KANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
+const RE_HAS_HANGUL = /\p{Script=Hangul}/u;
+
+/** §4.8 filename 白名單副檔名。 */
+const KNOWN_EXT = new Set([
+	"js", "ts", "jsx", "tsx", "mjs", "cjs", "json", "html", "htm", "css",
+	"md", "txt", "csv", "xml", "yml", "yaml", "toml",
+	"png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "pdf",
+	"zip", "tar", "gz", "rar", "7z",
+	"mp3", "mp4", "mov", "wav", "avi", "mkv",
+	"swift", "py", "rb", "go", "rs", "c", "h", "cpp", "java", "sh",
+]);
+
+/**
+ * @typedef {object} WorthResult
+ * @property {boolean} worth
+ * @property {string=} reason
+ */
+
+/**
+ * @param {string} raw
+ * @param {{ pageLangIsZh?: boolean }} [opts]
+ * @returns {WorthResult}
+ */
+function worthTranslating(raw, opts = {}) {
+	// R0 NFC + trim（僅供判斷、不改 source）；顯式去 ZWSP / soft-hyphen。
+	const t = raw.normalize("NFC").replace(/[​­]/gu, "").trim();
+
+	if (t === "" || RE_WHITESPACE_ONLY.test(t)) return { worth: false, reason: "whitespace" };
+	if (!RE_HAS_LETTER.test(t) && RE_EMOJI_SHELL.test(t) && RE_EMOJI_BODY.test(t)) {
+		return { worth: false, reason: "emoji" };
+	}
+	if (RE_PUNCT_ONLY.test(t) && !RE_HAS_ALNUM.test(t)) return { worth: false, reason: "punct" };
+	if (RE_NUMERIC.test(t) && RE_HAS_NUM.test(t) && !RE_HAS_LETTER.test(t)) {
+		return { worth: false, reason: "numeric" };
+	}
+	if (RE_EMAIL.test(t)) return { worth: false, reason: "email" };
+	if (RE_URL.test(t)) return { worth: false, reason: "url" };
+	if (RE_PATH.test(t)) return { worth: false, reason: "path" };
+	if (isFilenameOnly(t)) return { worth: false, reason: "filename" };
+
+	// R9 already-target：整頁語言 gate（非逐段 Han-ratio）；kana / hangul 強制送翻。
+	if (opts.pageLangIsZh && RE_HAS_HAN.test(t) && !RE_HAS_KANA.test(t) && !RE_HAS_HANGUL.test(t)) {
+		return { worth: false, reason: "already-target" };
+	}
+
+	// R11 min-length：非漢字段，任何 \p{L} 字母數 < 2 才跳（非僅拉丁）。
+	if (!RE_HAS_HAN.test(t)) {
+		let letters = 0;
+		for (const c of t) if (RE_HAS_LETTER.test(c)) letters++;
+		if (letters < 2) return { worth: false, reason: "min-length" };
+	}
+
+	return { worth: true };
+}
+
+/** §4.8 單 token + 已知副檔名。 */
+function isFilenameOnly(t) {
+	if (/\s/u.test(t)) return false;
+	const dot = t.lastIndexOf(".");
+	if (dot <= 0 || dot === t.length - 1) return false;
+	return KNOWN_EXT.has(t.slice(dot + 1).toLowerCase());
+}
+
+// ============================================================================
+// ctx：採集情境（getStyle 注入、targetLang、站台覆寫、display 快取）
+// ============================================================================
+
+/**
+ * @typedef {object} StyleInfo
+ * @property {string} display
+ * @property {string} visibility
+ * @property {string} contentVisibility
+ */
+
+/**
+ * @typedef {object} CollectContext
+ * @property {string} targetLang
+ * @property {boolean} pageLangIsZh
+ * @property {(el: Element) => StyleInfo} getStyle
+ * @property {WeakMap<Element, StyleInfo>} _styleCache
+ */
+
+/**
+ * 瀏覽器預設 getStyle：getComputedStyle 一次、WeakMap 快取（§8）。
+ * @param {Element} el
+ * @param {WeakMap<Element, StyleInfo>} cache
+ * @returns {StyleInfo}
+ */
+function browserGetStyle(el, cache) {
+	let s = cache.get(el);
+	if (s) return s;
+	const cs = getComputedStyle(el);
+	s = {
+		display: cs.display,
+		visibility: cs.visibility,
+		contentVisibility: cs.getPropertyValue("content-visibility"),
+	};
+	cache.set(el, s);
+	return s;
+}
+
+/**
+ * @param {Partial<CollectContext>} [opts]
+ * @returns {CollectContext}
+ */
+function makeContext(opts = {}) {
+	const cache = opts._styleCache || new WeakMap();
+	return {
+		targetLang: opts.targetLang || "zh-Hant",
+		pageLangIsZh: opts.pageLangIsZh ?? false,
+		getStyle: opts.getStyle || ((el) => browserGetStyle(el, cache)),
+		_styleCache: cache,
+	};
+}
+
+// ============================================================================
+// §5 classifyNode 判斷順序（短路最佳化、每元素一次 getStyle）
+// ============================================================================
+
+/**
+ * @param {Node} node
+ * @param {CollectContext} ctx
+ * @returns {{ disp: NodeDisposition, cs: StyleInfo | null }}
+ */
+function classifyNode(node, ctx) {
+	// [0] node type 閘
+	if (node.nodeType === NODE_TEXT) return { disp: "WALK", cs: null };
+	if (node.nodeType === NODE_COMMENT || node.nodeType === NODE_PI) {
+		return { disp: "SKIP_SUBTREE", cs: null };
+	}
+	if (node.nodeType !== NODE_ELEMENT) return { disp: "SKIP_SUBTREE", cs: null };
+
+	const el = /** @type {Element} */ (node);
+	const tag = el.tagName;
+
+	// [1] 自家標記（二次 walk 高命中、最便宜）
+	if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) {
+		return { disp: "SKIP_SUBTREE", cs: null };
+	}
+
+	// [2] 硬標籤黑名單（Set.has O(1)、整棵剪枝）；MathML 命中根即整棵跳
+	if (SKIP_SUBTREE_TAGS.has(tag) || tag === "MATH") return { disp: "SKIP_SUBTREE", cs: null };
+
+	// [3] PRE → SKIP；CODE（祖先無 PRE）→ OPAQUE
+	if (tag === "PRE") return { disp: "SKIP_SUBTREE", cs: null };
+	if (tag === "CODE") {
+		const inPre = typeof el.closest === "function" && el.closest("pre");
+		return inPre ? { disp: "SKIP_SUBTREE", cs: null } : { disp: "OPAQUE_INLINE", cs: null };
+	}
+
+	// [4] OPAQUE_INLINE_TAGS（trim 非空才併）
+	if (OPAQUE_INLINE_TAGS.has(tag)) {
+		return hasText(el) ? { disp: "OPAQUE_INLINE", cs: null } : { disp: "SKIP_SUBTREE", cs: null };
+	}
+
+	// [5] 屬性隱藏 / 語意（純屬性讀取、無 reflow）
+	if (el.getAttribute("aria-hidden") === "true") return { disp: "SKIP_SUBTREE", cs: null };
+	if (el.hidden === true || el.hasAttribute("hidden")) return { disp: "SKIP_SUBTREE", cs: null };
+	if (isContentEditable(el)) return { disp: "SKIP_SUBTREE", cs: null };
+	const role = el.getAttribute("role");
+	if (role && SKIP_ROLES.has(role.toLowerCase().trim())) return { disp: "SKIP_SUBTREE", cs: null };
+	if (hasSkipClass(el)) return { disp: "SKIP_SUBTREE", cs: null };
+
+	// [6] translate-no（容器白名單護欄）
+	if (respectsTranslateNo(el)) {
+		// block 級 → SKIP_SUBTREE；行內留待 §6 buffer 當 OPAQUE 併（此處先整棵跳，行內 case 由覆寫表處理）
+		return { disp: "SKIP_SUBTREE", cs: null };
+	}
+
+	// [7] 站台覆寫（hostname → selector，v1 空表）— 預留
+
+	// [8] lang 自身為目標語（不繼承）
+	if (isAlreadyTargetLang(el, ctx.targetLang)) return { disp: "SKIP_SUBTREE", cs: null };
+
+	// [9] getStyle（唯一一次）：display:none / visibility / content-visibility
+	const cs = ctx.getStyle(el);
+	if (cs.display === "none" || cs.display === "") return { disp: "SKIP_SUBTREE", cs };
+	if (cs.contentVisibility === "hidden") return { disp: "SKIP_SUBTREE", cs };
+	// visibility:hidden 不整棵跳（§3.7 B5）：自身不產段、續 walk 子孫 → 交給採集核心，此處放行
+	return { disp: "WALK", cs };
+}
+
+/** contenteditable 繼承（§3.4 安全紅線）。 */
+function isContentEditable(el) {
+	if (typeof el.isContentEditable === "boolean") return el.isContentEditable;
+	const v = el.getAttribute("contenteditable");
+	return v === "" || v === "true";
+}
+
+/** §3.4 sr-only / visually-hidden class 比對。 */
+function hasSkipClass(el) {
+	return el.classList.contains("sr-only") || el.classList.contains("visually-hidden");
+}
+
+/** §3.5 translate="no" / .notranslate，大容器降級不尊重。 */
+function respectsTranslateNo(el) {
+	// 只看元素自身明示訊號（attribute / class）；不用 el.translate IDL——該屬性會繼承
+	// 祖先 translate="no"，使大容器降級放行後、內層非大容器子代仍被當 no 而整棵跳
+	// （真 WebKit 實證：跑道 B fixture 13 產空段；linkedom 不實作此 IDL 故跑道 A 抓不到）。
+	// 與 §3.6 lang「只看自身不繼承」一致；元素自帶 explicit translate=no 仍由 getAttribute 命中。
+	const no = el.getAttribute("translate") === "no"
+		|| el.classList.contains("notranslate");
+	if (!no) return false;
+	return !BULK_TRANSLATE_NO_TAGS.has(el.tagName);
+}
+
+/** §3.6 lang 自身為目標語（只看自身、不繼承祖先）。 */
+function isAlreadyTargetLang(el) {
+	const lang = el.getAttribute("lang")?.toLowerCase().trim();
+	if (!lang) return false;
+	if (lang === "zh-cn" || lang.startsWith("zh-hans")) return false; // 簡中不跳（待 Apple 支援度實測）
+	return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw");
+}
+
+// ============================================================================
+// §9 Segment IR
+// ============================================================================
+
+const SegmentState = Object.freeze({
+	PENDING: "pending", DRAFTING: "drafting", DRAFTED: "drafted",
+	REFINING: "refining", REFINED: "refined", FAILED: "failed",
+	SKIPPED: "skipped", STALE: "stale",
+});
+
+/**
+ * @typedef {object} ProtectedSpan
+ * @property {number} start
+ * @property {number} end
+ * @property {string} kind   // 'code' | 'time'
+ */
+
+/**
+ * @typedef {object} Segment
+ * @property {string} id
+ * @property {number} order
+ * @property {string} source
+ * @property {object} anchor
+ * @property {string} state
+ * @property {{ protectedSpans?: ProtectedSpan[], skipReason?: string, charCount?: number }} [meta]
+ */
+
+// ============================================================================
+// §6 採集演算法（兩遍 walk + buffer flush）
+// ============================================================================
+
+/** 子節點走訪：open shadow root 穿透（§5 C1）。 */
+function* childNodes(node) {
+	for (const c of node.childNodes) yield c;
+}
+
+/**
+ * 第一遍：標籤 + forceBlock 上傳 + 算 hasBlockDescendant。
+ * 回傳 labels：WeakMap<node, { disp, cs, isBlock }>，isBlock = shallow block ∨ 含 block 子（forceBlock 上傳）。
+ * @param {Node} root
+ * @param {CollectContext} ctx
+ * @returns {WeakMap<Node, { disp: NodeDisposition, cs: StyleInfo|null, isBlock: boolean }>}
+ */
+function walkAndLabel(root, ctx) {
+	/** @type {WeakMap<Node, { disp: NodeDisposition, cs: StyleInfo|null, isBlock: boolean }>} */
+	const labels = new WeakMap();
+
+	/** @returns {boolean} hasBlockDescendant（含自身為 block） */
+	function visit(node) {
+		const { disp, cs } = classifyNode(node, ctx);
+		if (disp === "SKIP_SUBTREE") {
+			labels.set(node, { disp, cs, isBlock: false });
+			return false;
+		}
+		if (disp === "OPAQUE_INLINE") {
+			labels.set(node, { disp, cs, isBlock: false });
+			return false; // 不展開、不可分割、視為 inline
+		}
+		// WALK
+		if (node.nodeType === NODE_TEXT) {
+			labels.set(node, { disp, cs, isBlock: false });
+			return false;
+		}
+
+		const el = /** @type {Element} */ (node);
+		let hasBlockChild = false;
+		for (const child of childNodes(el)) {
+			if (visit(child)) hasBlockChild = true;
+		}
+		if (el.shadowRoot) {
+			for (const child of childNodes(el.shadowRoot)) {
+				if (visit(child)) hasBlockChild = true;
+			}
+		}
+
+		const shallowBlock = isShallowBlock(el, cs);
+		// forceBlock 上傳：自身 block，或含 block 子（混排）→ 走 block flush 分支。
+		const isBlock = shallowBlock || hasBlockChild;
+		labels.set(node, { disp, cs, isBlock });
+		return isBlock;
+	}
+
+	visit(root);
+	return labels;
+}
+
+/** §2.2 shallow block 判斷（白名單先、computed 後）。 */
+function isShallowBlock(el, cs) {
+	if (FORCE_BLOCK_TAGS.has(el.tagName)) return true;
+	const d = cs ? cs.display : "";
+	if (d === "none" || d === "") return false;
+	return !isInlineDisplay(d);
+}
+
+/**
+ * 第二遍：用 labels 組翻譯單位（consecutiveInline 累積、block 邊界 flush）。
+ * @param {Node} root
+ * @param {CollectContext} ctx
+ * @param {{ walkId?: number }} [opts]
+ * @returns {Segment[]}
+ */
+function collectSegments(root, ctx, opts = {}) {
+	const labels = walkAndLabel(root, ctx);
+	const walkId = opts.walkId ?? 0;
+	/** @type {Segment[]} */
+	const segments = [];
+	let order = 0;
+
+	function labelOf(node) {
+		return labels.get(node) || classifyLabel(node, ctx);
+	}
+	function classifyLabel(node, c) {
+		const { disp, cs } = classifyNode(node, c);
+		const isBlock = node.nodeType === NODE_ELEMENT && disp === "WALK"
+			&& isShallowBlock(/** @type {Element} */ (node), cs);
+		return { disp, cs, isBlock };
+	}
+
+	function collect(node) {
+		/** @type {Node[]} */
+		let buffer = [];
+		const flushHere = () => {
+			if (buffer.length) makeSegmentFromBuffer(buffer);
+			buffer = [];
+		};
+		for (const child of childNodes(node)) {
+			if (child.nodeType === NODE_COMMENT || child.nodeType === NODE_PI) continue; // G5
+			const { disp, isBlock } = labelOf(child);
+			if (disp === "SKIP_SUBTREE") continue; // 不切段：跳過不可見/無關子樹，buffer 續接
+			if (child.nodeType === NODE_ELEMENT && child.tagName === "BR") {
+				buffer.push(child); // §6.2 BR→\n（extractText 處理）
+				continue;
+			}
+			if (disp === "OPAQUE_INLINE") { buffer.push(child); continue; }
+			if (!isBlock) { buffer.push(child); continue; } // inline / text → 累積
+			// block → 先 flush 既有 buffer，再遞迴
+			flushHere();
+			collect(child);
+		}
+		flushHere();
+	}
+
+	function makeSegmentFromBuffer(buf) {
+		const { text, spans } = extractText(buf);
+		const source = normalizeSource(text);
+		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
+		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh });
+		const id = makeId(walkId, order);
+		if (!wt.worth) {
+			segments.push({
+				id, order, source, anchor: makeAnchor(buf),
+				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
+			});
+			order++;
+			return;
+		}
+		/** @type {Segment} */
+		const seg = {
+			id, order, source, anchor: makeAnchor(buf), state: SegmentState.PENDING,
+		};
+		if (spans.length) seg.meta = { protectedSpans: spans, charCount: source.length };
+		segments.push(seg);
+		order++;
+	}
+
+	collect(root);
+	return segments;
+}
+
+/** §8.1 id = "k" + base36(walkId) + "-" + base36(order)。 */
+function makeId(walkId, order) {
+	return "k" + (walkId >>> 0).toString(36) + "-" + (order >>> 0).toString(36);
+}
+
+/** §6.4 / §9.2 anchor 載體（refNode 指段末節點）。 */
+function makeAnchor(buf) {
+	const last = buf[buf.length - 1];
+	const block = closestBlock(last);
+	return { block, insertMode: "after-segment", refNode: last };
+}
+function closestBlock(node) {
+	let el = node.nodeType === NODE_ELEMENT ? node : node.parentNode;
+	return el || null;
+}
+
+// ============================================================================
+// §6.2 extractText 三特判（br / ruby / contents）+ 記 code/time protectedSpans
+// ============================================================================
+
+/**
+ * @param {Node[]} buf
+ * @returns {{ text: string, spans: ProtectedSpan[] }}
+ */
+function extractText(buf) {
+	let text = "";
+	/** @type {ProtectedSpan[]} */
+	const spans = [];
+	for (const node of buf) {
+		text = appendNode(node, text, spans);
+	}
+	return { text, spans };
+}
+
+function appendNode(node, text, spans) {
+	if (node.nodeType === NODE_TEXT) return text + (node.nodeValue || "");
+	if (node.nodeType !== NODE_ELEMENT) return text;
+	const el = /** @type {Element} */ (node);
+	const tag = el.tagName;
+	if (tag === "BR") return text + "\n";                 // §6.2-1
+	if (tag === "RT" || tag === "RP") return text;        // §6.2-2 ruby 只取 base
+	if (OPAQUE_INLINE_TAGS.has(tag)) {                    // code/time 原子 + 記 protectedSpan
+		const piece = el.textContent || "";
+		const start = text.length;
+		text += piece;
+		spans.push({ start, end: text.length, kind: tag.toLowerCase() });
+		return text;
+	}
+	// 其餘 inline 元素：遞迴子節點（ruby base、巢狀 inline、contents 容器）
+	for (const child of childNodes(el)) {
+		text = appendNode(child, text, spans);
+	}
+	return text;
+}
+
+/** 空白正規化但保 \n（§11.3）：折疊空白為單一空格、保留換行、trim 兩端。 */
+function normalizeSource(text) {
+	return text
+		.replace(/[^\S\n]+/gu, " ")  // 非換行空白折疊成單空格
+		.replace(/ *\n */gu, "\n")    // 換行兩側空白吃掉
+		.replace(/\n{2,}/gu, "\n")    // 多換行折疊
+		.trim();
+}
+
+// ============================================================================
+// 瀏覽器自動執行（M1 渲染/插回於 Phase 4 接上；此處暫保留 PoC 一段式行為）
+// ============================================================================
+
+function main() {
 	console.log("[雅言] content script loaded");
 	const sample = document.querySelector("p")?.innerText?.trim();
 	if (!sample) return;
-	const result = await browser.runtime.sendMessage({
-		type: "translate",
-		text: sample,
-		to: "zh-Hant",
-	});
-	console.log("[雅言] 翻譯結果:", result);
-})();
+	browser.runtime
+		.sendMessage({ type: "translate", text: sample, to: "zh-Hant" })
+		.then((result) => console.log("[雅言] 翻譯結果:", result));
+}
+
+if (typeof document !== "undefined" && typeof browser !== "undefined") {
+	main();
+}
+
+// ============================================================================
+// 測試取用尾巴（browser classic script：module 不存在、globalThis 沙盒安全）
+// ============================================================================
+
+const __koineExports = {
+	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
+	isInlineDisplay, hasText, worthTranslating, isFilenameOnly,
+	makeContext, classifyNode, isShallowBlock,
+	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
+};
+
+if (typeof module !== "undefined" && module.exports) {
+	module.exports = __koineExports;
+}
+if (typeof globalThis !== "undefined") {
+	globalThis.__koine__ = __koineExports;
+}

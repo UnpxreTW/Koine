@@ -433,7 +433,7 @@ function collectSegments(root, ctx, opts = {}) {
 		/** @type {Node[]} */
 		let buffer = [];
 		const flushHere = () => {
-			if (buffer.length) makeSegmentFromBuffer(buffer);
+			if (buffer.length) makeSegmentFromBuffer(buffer, node);
 			buffer = [];
 		};
 		for (const child of childNodes(node)) {
@@ -453,7 +453,7 @@ function collectSegments(root, ctx, opts = {}) {
 		flushHere();
 	}
 
-	function makeSegmentFromBuffer(buf) {
+	function makeSegmentFromBuffer(buf, blockNode) {
 		const { text, spans } = extractText(buf);
 		const source = normalizeSource(text);
 		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
@@ -461,7 +461,7 @@ function collectSegments(root, ctx, opts = {}) {
 		const id = makeId(walkId, order);
 		if (!wt.worth) {
 			segments.push({
-				id, order, source, anchor: makeAnchor(buf),
+				id, order, source, anchor: makeAnchor(buf, blockNode),
 				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 			});
 			order++;
@@ -469,7 +469,7 @@ function collectSegments(root, ctx, opts = {}) {
 		}
 		/** @type {Segment} */
 		const seg = {
-			id, order, source, anchor: makeAnchor(buf), state: SegmentState.PENDING,
+			id, order, source, anchor: makeAnchor(buf, blockNode), state: SegmentState.PENDING,
 		};
 		if (spans.length) seg.meta = { protectedSpans: spans, charCount: source.length };
 		segments.push(seg);
@@ -485,15 +485,13 @@ function makeId(walkId, order) {
 	return "k" + (walkId >>> 0).toString(36) + "-" + (order >>> 0).toString(36);
 }
 
-/** §6.4 / §9.2 anchor 載體（refNode 指段末節點）。 */
-function makeAnchor(buf) {
-	const last = buf[buf.length - 1];
-	const block = closestBlock(last);
-	return { block, insertMode: "after-segment", refNode: last };
-}
-function closestBlock(node) {
-	let el = node.nodeType === NODE_ELEMENT ? node : node.parentNode;
-	return el || null;
+/**
+ * §6.4 / §9.2 anchor 載體：block = 正在收的 block 容器（collect frame 透傳，
+ * 比事後 closestBlock(段末節點) 準——巢狀 inline 的段末是 inline 父，會落錯位）；
+ * refNode 指段末節點（re-query / v2 替換用）。
+ */
+function makeAnchor(buf, blockNode) {
+	return { block: blockNode || null, insertMode: "after-segment", refNode: buf[buf.length - 1] };
 }
 
 // ============================================================================
@@ -545,6 +543,44 @@ function normalizeSource(text) {
 }
 
 // ============================================================================
+// §7.1 並列插回 render 層（採集之後的獨立 pass；§8 讀寫分離：採集期不寫 DOM）
+// ============================================================================
+
+/**
+ * 把帶譯文的 segment 並列插回 DOM：對每個 `drafted` 且有譯文的 segment，
+ * 在其 `anchor.block` 之後（`block.after`）插一個雙語譯文 wrapper（§7.1）。
+ *
+ * wrapper 帶 `data-koine-id` + `koine-translated` class——再次採集時 classifyNode [1]
+ * 先擋自家標記、整棵跳過，故插回不會被自己重採（§7.1 (c) 自吞防護）。
+ * 只新增 sibling、不動原文節點（§7.1 (b)）。
+ *
+ * @param {Segment[]} segments
+ * @param {{ tag?: string }} [opts]   tag 預設 `div`（M1 固定 block；tag-mirror 留後續）
+ * @returns {Element[]} 已插入的 wrapper 元素（依插入序）
+ */
+function insertTranslations(segments, opts = {}) {
+	const tag = opts.tag || "div";
+	/** @type {Element[]} */
+	const inserted = [];
+	for (const seg of segments) {
+		if (seg.state !== SegmentState.DRAFTED) continue; // 只消費 drafted（pending / skipped 跳過）
+		const text = seg.refined ?? seg.draft;            // §9.1 並列取值 refined ?? draft
+		if (text == null || text === "") continue;        // 無譯文 / 譯文=空 不插
+		const block = seg.anchor && seg.anchor.block;
+		if (!block || typeof block.after !== "function") continue;
+		const doc = block.ownerDocument;
+		if (!doc) continue;
+		const wrapper = doc.createElement(tag);
+		wrapper.setAttribute("data-koine-id", seg.id);
+		wrapper.className = "koine-translated";
+		wrapper.textContent = text;
+		block.after(wrapper);
+		inserted.push(wrapper);
+	}
+	return inserted;
+}
+
+// ============================================================================
 // 瀏覽器自動執行（M1 渲染/插回於 Phase 4 接上；此處暫保留 PoC 一段式行為）
 // ============================================================================
 
@@ -570,6 +606,7 @@ const __koineExports = {
 	isInlineDisplay, hasText, worthTranslating, isFilenameOnly,
 	makeContext, classifyNode, isShallowBlock,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
+	insertTranslations,
 };
 
 if (typeof module !== "undefined" && module.exports) {

@@ -41,6 +41,25 @@ private struct NormSeg: Decodable, Equatable {
 	let protectedSpans: [ProtectedSpan]?
 }
 
+/// render 插回往返驗證形狀：採集 → 塞假 draft → `insertTranslations` → 二次採集的各階段計數（§7.1）。
+private struct RenderResult: Decodable {
+
+	/// 第一次採集（render 前）的段數。
+	let firstCount: Int
+
+	/// 被塞假 draft 並轉 `drafted` 的段數（= 應插 wrapper 數）。
+	let drafted: Int
+
+	/// `insertTranslations` 實際插入的 wrapper 數。
+	let inserted: Int
+
+	/// 第二次採集（render 後）的段數；自吞防護正常時應等於 `firstCount`。
+	let secondCount: Int
+
+	/// 二次採集中 source 含譯文標記的段數；自吞防護正常時應為 0。
+	let leaked: Int
+}
+
 /// fixture 清單（`manifest.json` 解碼）。
 private struct Manifest: Decodable {
 
@@ -108,6 +127,32 @@ private let driverJS = """
 })();
 """
 
+/// render driver：採集 → 對 pending 段塞假 draft（前綴標記）並轉 `drafted` → `insertTranslations`
+/// 插回 → 以新 walkId 二次採集；回各階段計數（JSON）供自吞往返斷言（§7.1）。
+private let renderDriverJS = """
+(() => {
+  const k = globalThis.__koine__;
+  const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+  const MARK = '@@TR@@';
+  const first = k.collectSegments(document.body, ctx, { walkId: 1 });
+  let drafted = 0;
+  for (const s of first) {
+    if (s.state === k.SegmentState.PENDING) {
+      s.draft = MARK + s.source;
+      s.state = k.SegmentState.DRAFTED;
+      drafted++;
+    }
+  }
+  const inserted = k.insertTranslations(first);
+  const second = k.collectSegments(document.body, ctx, { walkId: 2 });
+  const leaked = second.filter((s) => s.source.indexOf(MARK) !== -1).length;
+  return JSON.stringify({
+    firstCount: first.length, drafted: drafted, inserted: inserted.length,
+    secondCount: second.length, leaked: leaked,
+  });
+})();
+"""
+
 /// `loadHTMLString` 完成回呼橋接（`navigationDelegate` 為 weak，呼叫端需保強參考至完成）。
 private final class NavDelegate: NSObject, WKNavigationDelegate {
 
@@ -158,6 +203,23 @@ final class CollectWebKitTests: XCTestCase {
 			let want = try Source.golden(testCase.name)
 			XCTAssertEqual(got, want, "fixture \(testCase.name)（\(testCase.desc)）與 golden 不符")
 		}
+	}
+
+	/// 並列插回往返：真 WebKit 採集 → 插回譯文 wrapper → 二次採集應 0 新段（§7.1 自吞防護）。
+	func testRenderInsertThenRecollect() async throws {
+		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		await load(webView, html: try Source.fixtureHTML("01-basic-paragraphs"))
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+		let json = try await webView.evaluateJavaScript(renderDriverJS) as? String ?? "{}"
+		let result = try JSONDecoder().decode(RenderResult.self, from: Data(json.utf8))
+		XCTAssertGreaterThan(result.drafted, 0, "fixture 應至少有一段 pending 可 draft")
+		XCTAssertEqual(result.inserted, result.drafted, "插入 wrapper 數應 = drafted 段數")
+		XCTAssertEqual(
+			result.secondCount,
+			result.firstCount,
+			"render 後再採集應 0 新段（wrapper 全被 classifyNode [1] 擋）"
+		)
+		XCTAssertEqual(result.leaked, 0, "二次採集不得撈到任何譯文（自吞防護 §7.1 c）")
 	}
 
 	/// SPEC §1 實測基準 smoke：照抄者以此為準的關鍵值，對齊真 WebKit。

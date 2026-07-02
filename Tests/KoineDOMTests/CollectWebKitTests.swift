@@ -60,6 +60,16 @@ private struct RenderResult: Decodable {
 	let leaked: Int
 }
 
+/// observe 進場驗證形狀：pending 段數 vs 真 IntersectionObserver 觸發 onEnter 的段數。
+private struct ObserveResult: Decodable {
+
+	/// 採集得到的 pending（待譯）段數。
+	let pending: Int
+
+	/// 進場觸發 onEnter 的段數。
+	let entered: Int
+}
+
 /// fixture 清單（`manifest.json` 解碼）。
 private struct Manifest: Decodable {
 
@@ -153,6 +163,24 @@ private let renderDriverJS = """
 })();
 """
 
+/// observe driver（`callAsyncJavaScript` body，await 真 IntersectionObserver）：採集 → 對 pending 段掛
+/// `observeSegments`（走瀏覽器預設 IntersectionObserver）→ 收進場 onEnter 觸發數；全進場或 2s timeout 回報。
+private let observeBody = """
+const k = globalThis.__koine__;
+const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
+const pending = segs.filter((s) => s.state === k.SegmentState.PENDING);
+return await new Promise((resolve) => {
+  const entered = [];
+  const done = () => resolve(JSON.stringify({ pending: pending.length, entered: entered.length }));
+  if (pending.length === 0) { done(); return; }
+  k.observeSegments(segs, {
+    onEnter: (s) => { entered.push(s.id); if (entered.length === pending.length) done(); },
+  });
+  setTimeout(done, 2000);
+});
+"""
+
 /// `loadHTMLString` 完成回呼橋接（`navigationDelegate` 為 weak，呼叫端需保強參考至完成）。
 private final class NavDelegate: NSObject, WKNavigationDelegate {
 
@@ -220,6 +248,18 @@ final class CollectWebKitTests: XCTestCase {
 			"render 後再採集應 0 新段（wrapper 全被 classifyNode [1] 擋）"
 		)
 		XCTAssertEqual(result.leaked, 0, "二次採集不得撈到任何譯文（自吞防護 §7.1 c）")
+	}
+
+	/// 進場觀察跑道 B：真 IntersectionObserver 對所有 pending 段觸發 onEnter（§10 lazy 進場）。
+	func testObserveEntersPendingSegments() async throws {
+		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		await load(webView, html: try Source.fixtureHTML("01-basic-paragraphs"))
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+		let raw = try await webView.callAsyncJavaScript(observeBody, arguments: [:], in: nil, contentWorld: .page)
+		let json = raw as? String ?? "{}"
+		let result = try JSONDecoder().decode(ObserveResult.self, from: Data(json.utf8))
+		XCTAssertGreaterThan(result.pending, 0, "fixture 應有 pending 段")
+		XCTAssertEqual(result.entered, result.pending, "真 IntersectionObserver 應對所有 pending 段觸發 onEnter（進場）")
 	}
 
 	/// SPEC §1 實測基準 smoke：照抄者以此為準的關鍵值，對齊真 WebKit。

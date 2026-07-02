@@ -678,16 +678,68 @@ function observeSegments(segments, opts) {
 }
 
 // ============================================================================
-// 瀏覽器自動執行（M1 渲染/插回於 Phase 4 接上；此處暫保留 PoC 一段式行為）
+// §9.4 bridge 串接：onEnter 取譯 → 狀態機 pending→drafting→drafted/failed → 插回
+// ============================================================================
+
+/**
+ * 單段取譯：送 { id, source, from, to } 過 bridge → 回 { id, text } / { id, error } →
+ * 落狀態機並在成功時插回。進場觀察的 onEnter 掛此函式（B 的鉤子由此接真 send）。
+ * `send` 由呼叫端注入（瀏覽器走 background sendMessage、測試塞 fake）、回 Promise。
+ * M1 不 retry（failed 即終態、記 meta.failReason）。
+ *
+ * @param {Segment} seg
+ * @param {(req: { id: string, source: string, from?: string, to?: string }) => Promise<any>} send
+ * @param {{ from?: string, to?: string, insertOpts?: object }} [opts]
+ * @returns {Promise<void>}
+ */
+async function translateSegment(seg, send, opts = {}) {
+	if (seg.state !== SegmentState.PENDING) return; // 只譯 pending
+	seg.state = SegmentState.DRAFTING;
+	let res;
+	try {
+		res = await send({ id: seg.id, source: seg.source, from: opts.from, to: opts.to });
+	} catch (e) {
+		seg.state = SegmentState.FAILED;
+		seg.meta = Object.assign({}, seg.meta, { failReason: String(e) });
+		return;
+	}
+	if (!res || res.error != null || typeof res.text !== "string") {
+		seg.state = SegmentState.FAILED;
+		seg.meta = Object.assign({}, seg.meta, {
+			failReason: (res && res.error != null) ? String(res.error) : "no-text",
+		});
+		return;
+	}
+	// §9.1：res.text === "" = 譯文＝原文、不顯示（有效終態、非失敗）；insertTranslations 自會跳過。
+	seg.draft = res.text;
+	seg.state = SegmentState.DRAFTED;
+	// render 獨立 pass：insert 例外不回溯污染已定案的 drafted（§7.1 讀寫分離、關注點分離）。
+	insertTranslations([seg], opts.insertOpts);
+}
+
+/**
+ * 組 native bridge 訊息（background 轉 sendNativeMessage）。抽成具名純函式供測試斷言線上形狀。
+ * @param {{ id: string, source: string, from?: string, to?: string }} req
+ * @returns {{ type: string, id: string, source: string, from?: string, to?: string }}
+ */
+function buildBridgeMessage(req) {
+	return { type: "translate", id: req.id, source: req.source, from: req.from, to: req.to };
+}
+
+// ============================================================================
+// 瀏覽器自動執行：採集 → 進場觀察 → 取譯 → 插回（M1 完整管線）
 // ============================================================================
 
 function main() {
 	console.log("[雅言] content script loaded");
-	const sample = document.querySelector("p")?.innerText?.trim();
-	if (!sample) return;
-	browser.runtime
-		.sendMessage({ type: "translate", text: sample, to: "zh-Hant" })
-		.then((result) => console.log("[雅言] 翻譯結果:", result));
+	const ctx = makeContext();
+	const segments = collectSegments(document.body, ctx, { walkId: 1 });
+	if (!segments.length) return;
+	const from = document.documentElement.getAttribute("lang") || undefined;
+	const send = (req) => browser.runtime.sendMessage(buildBridgeMessage(req));
+	observeSegments(segments, {
+		onEnter: (seg) => translateSegment(seg, send, { from, to: ctx.targetLang }),
+	});
 }
 
 if (typeof document !== "undefined" && typeof browser !== "undefined") {
@@ -703,7 +755,7 @@ const __koineExports = {
 	isInlineDisplay, hasText, worthTranslating, isFilenameOnly,
 	makeContext, classifyNode, isShallowBlock,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
-	insertTranslations, observeSegments,
+	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,
 };
 
 if (typeof module !== "undefined" && module.exports) {

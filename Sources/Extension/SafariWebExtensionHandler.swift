@@ -22,27 +22,18 @@ extension SafariWebExtensionHandler: NSExtensionRequestHandling {
 
 	func beginRequest(with context: NSExtensionContext) {
 		let item = context.inputItems.first as? NSExtensionItem
-		let message = item?.userInfo?[SFExtensionMessageKey] as? [String: Any]
-		guard let text = message?["text"] as? String else {
-			respond(context, with: ["error": "missing text"])
-			return
-		}
-		let source = (message?["from"] as? String) ?? "en"
-		let target = (message?["to"] as? String) ?? "zh-Hant"
+		let message = (item?.userInfo?[SFExtensionMessageKey] as? [String: Any]) ?? [:]
 		Task {
-			do {
-				let engine = AppleTranslationEngine()
-				let translated = try await engine.translate(
-					text,
-					from: Locale.Language(identifier: source),
-					to: Locale.Language(identifier: target)
-				)
-				logger.log("翻譯完成: \(translated, privacy: .public)")
-				respond(context, with: ["translated": translated])
-			} catch {
-				logger.error("翻譯失敗: \(error.localizedDescription, privacy: .public)")
-				respond(context, with: ["error": error.localizedDescription])
+			// 訊息拆解 + 引擎呼叫委派核心 BridgeTranslator（§9.4：{id,source} → {id,text}）；
+			// handler 只負責 NSExtension I/O 橋接，譯文邏輯與 CLI 共用同一路徑。
+			let translator = BridgeTranslator(engine: AppleTranslationEngine())
+			let payload = await translator.handle(message)
+			if let error = payload["error"] as? String {
+				logger.error("翻譯失敗: \(error, privacy: .public)")
+			} else if let text = payload["text"] as? String {
+				logger.log("翻譯完成: \(text, privacy: .public)")
 			}
+			respond(context, with: payload)
 		}
 	}
 

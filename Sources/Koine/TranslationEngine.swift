@@ -16,6 +16,12 @@ import Foundation
 /// 目前採單句 `String` 簽名；整篇批次（`translate(batch:)`）待後續擴充。
 public protocol TranslationEngine {
 
+	/// 預查語言組合可用性（讓呼叫端 fail fast、把失敗轉成可行動提示、不洩漏 framework error）。
+	func status(
+		from source: Locale.Language,
+		to target: Locale.Language
+	) async -> LanguagePairStatus
+
 	func translate(
 		_ text: String,
 		from source: Locale.Language,

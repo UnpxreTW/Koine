@@ -96,6 +96,7 @@ let project = Project(
 		),
 		// 採集層跑道 B：WKWebView（真 WebKit）載 fixture + 注入 content.js + 讀回 Segment JSON 比 golden。
 		// 測 computed-display 依賴規則（linkedom 跑道 A 無法涵蓋）。logic test、走 platform=macOS、不依賴 simulator。
+		// 亦承載核心 bridge 邏輯單測（BridgeTranslator，注入 mock TranslationEngine）→ 依賴核心庫 Koine。
 		.target(
 			name: "KoineDOMTests",
 			destinations: .macOS,
@@ -104,6 +105,7 @@ let project = Project(
 			deploymentTargets: .macOS("26.0"),
 			sources: ["Tests/KoineDOMTests/**/*.swift"],
 			dependencies: [
+				.target(name: "Koine"),
 				.package(product: "SwiftStyleLint", type: .plugin),
 			]
 		),

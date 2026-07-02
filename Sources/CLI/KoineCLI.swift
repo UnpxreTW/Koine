@@ -49,25 +49,11 @@ struct KoineCLI: AsyncParsableCommand {
 		let engine = AppleTranslationEngine()
 		let source = Locale.Language(identifier: fromLanguage)
 		let target = Locale.Language(identifier: toLanguage)
-		// 預查語言組合：standalone init 不 throws、失敗會延到 translate 才爆出
-		// 不可讀的 framework error——預查把兩種常見失敗轉成可行動訊息。
-		switch await engine.status(from: source, to: target) {
-		case .installed:
-			break
-		case .supported:
-			throw RuntimeError(
-				"""
-				語言包未下載（\(fromLanguage) → \(toLanguage)）。\
-				請至「系統設定 → 一般 → 語言與地區 → 翻譯語言」下載後再試。
-				"""
-			)
-		case .unsupported:
-			throw RuntimeError(
-				"""
-				不支援的語言組合：\(fromLanguage) → \(toLanguage)。\
-				請確認語言碼（BCP-47，如 en、zh-Hant、ja）。
-				"""
-			)
+		// 預查語言組合：standalone init 不 throws、失敗會延到 translate 才爆出不可讀的
+		// framework error——預查把兩種常見失敗轉成可行動訊息（文案與 bridge 共用 actionableMessage）。
+		if let hint = (await engine.status(from: source, to: target))
+			.actionableMessage(from: fromLanguage, to: toLanguage) {
+			throw RuntimeError(hint)
 		}
 		let translated = try await engine.translate(input, from: source, to: target)
 		if json {

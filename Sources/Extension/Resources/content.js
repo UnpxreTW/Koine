@@ -581,6 +581,103 @@ function insertTranslations(segments, opts = {}) {
 }
 
 // ============================================================================
+// §10 進場觀察（IntersectionObserver + 併發閘門；lazy 進場才觸發取譯）
+// ============================================================================
+
+/**
+ * 瀏覽器預設 observer 工廠：包 `IntersectionObserver`。
+ * 跑道 A（linkedom）無此 API，故 body 內才 new——測試一律由 opts 注入 stub、不會走到這。
+ * @param {IntersectionObserverCallback} cb
+ * @param {IntersectionObserverInit} options
+ * @returns {IntersectionObserver}
+ */
+function defaultMakeObserver(cb, options) {
+	return new IntersectionObserver(cb, options);
+}
+
+/**
+ * 對 `pending` segment 掛 IntersectionObserver：進場（rootMargin 提前 600px）→ 立即 unobserve →
+ * 進併發閘門 queue → 呼叫 `onEnter(segment)` 觸發取譯（§10、§7 C22）。M1 lazy 取譯時機。
+ *
+ * B 只做「觀察 + 閘門 + 呼鉤子」、不碰 bridge——`onEnter` 由呼叫端注入（C 接 native bridge、
+ * 測試塞 fake）。只 observe `pending` 段（skipped / drafted / 無 block 跳過）；每個 block 只
+ * observe 一次（多段共用同一 block 時進場一併入列）。
+ *
+ * @param {Segment[]} segments
+ * @param {{
+ *   onEnter: (seg: Segment) => (void | Promise<void>),
+ *   maxInFlight?: number,
+ *   makeObserver?: (cb: Function, options: object) => { observe: Function, unobserve: Function, disconnect?: Function },
+ *   rootMargin?: string,
+ *   threshold?: number,
+ * }} opts
+ * @returns {{ observer: object, disconnect: () => void }} disconnect() 停 observer + 清未 dispatch 的排隊段
+ */
+function observeSegments(segments, opts) {
+	const onEnter = opts.onEnter;
+	if (typeof onEnter !== "function") {
+		throw new TypeError("observeSegments: opts.onEnter 必須為 function（取譯觸發鉤子、必填）");
+	}
+	const maxInFlight = opts.maxInFlight ?? 6;
+	const makeObserver = opts.makeObserver || defaultMakeObserver;
+
+	// block → 該 block 綁的 pending 段（多段共用同一 block 時進場一併觸發）。
+	/** @type {Map<Element, Segment[]>} */
+	const blockToSegs = new Map();
+	/** @type {Element[]} */
+	const blocks = [];
+	for (const seg of segments) {
+		if (seg.state !== SegmentState.PENDING) continue; // 只觀察待譯段
+		const block = seg.anchor && seg.anchor.block;
+		if (!block) continue;
+		let arr = blockToSegs.get(block);
+		if (!arr) { arr = []; blockToSegs.set(block, arr); blocks.push(block); }
+		arr.push(seg);
+	}
+
+	// 併發閘門：queue + inFlight 計數，最多 maxInFlight 個 onEnter 同時 in-flight（§10 D3，on-device 硬約束）。
+	/** @type {Segment[]} */
+	const queue = [];
+	let inFlight = 0;
+	let disconnected = false;
+	function pump() {
+		while (!disconnected && inFlight < maxInFlight && queue.length > 0) {
+			const seg = queue.shift();
+			inFlight++;
+			// 包進 promise 鏈：吸收 onEnter 的同步 throw / 回傳 Promise，settle 後補位。
+			Promise.resolve().then(() => onEnter(seg)).then(settle, settle);
+		}
+	}
+	function settle() {
+		inFlight--;
+		pump();
+	}
+
+	const observer = makeObserver((entries, obs) => {
+		if (disconnected) return;
+		for (const entry of entries) {
+			if (!entry.isIntersecting) continue;
+			obs.unobserve(entry.target); // 進場即 unobserve：一次性、不重複觸發
+			const segs = blockToSegs.get(entry.target);
+			if (!segs) continue;
+			for (const seg of segs) queue.push(seg);
+			pump();
+		}
+	}, { root: null, rootMargin: opts.rootMargin || "600px", threshold: opts.threshold ?? 0.1 });
+
+	for (const block of blocks) observer.observe(block);
+	return {
+		observer,
+		// disconnect：停 observer + 清空尚未 dispatch 的排隊段（已 in-flight 的 onEnter 無法取消）。
+		disconnect() {
+			disconnected = true;
+			queue.length = 0;
+			if (typeof observer.disconnect === "function") observer.disconnect();
+		},
+	};
+}
+
+// ============================================================================
 // 瀏覽器自動執行（M1 渲染/插回於 Phase 4 接上；此處暫保留 PoC 一段式行為）
 // ============================================================================
 
@@ -606,7 +703,7 @@ const __koineExports = {
 	isInlineDisplay, hasText, worthTranslating, isFilenameOnly,
 	makeContext, classifyNode, isShallowBlock,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
-	insertTranslations,
+	insertTranslations, observeSegments,
 };
 
 if (typeof module !== "undefined" && module.exports) {

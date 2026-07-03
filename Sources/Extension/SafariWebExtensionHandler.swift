@@ -10,7 +10,9 @@ import Foundation
 import SafariServices
 import os.log
 
-private let logger: Logger = .init(subsystem: "\(#bundle)", category: "extension")
+// subsystem 必須是固定字串：`"\(#bundle)"` 插值出 `NSBundle </path…> (loaded)`，
+// 任何 `log stream` predicate 都對不上、appex log 因此完全不可觀測。
+private let logger: Logger = .init(subsystem: "me.unpxre.koine.Extension", category: "extension")
 
 /// Safari Web Extension 的 native handler。
 ///

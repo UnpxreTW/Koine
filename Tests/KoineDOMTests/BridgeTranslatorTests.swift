@@ -7,7 +7,7 @@
 //  SPDX-License-Identifier: Apache-2.0
 
 import Foundation
-import XCTest
+import Testing
 
 import Koine
 
@@ -46,68 +46,68 @@ private enum MockError: Error {
 	case boom
 }
 
-/// 核心 bridge 邏輯跑道：`BridgeTranslator.handle` 的訊息拆解 + 引擎委派（注入 mock、不碰真 translationd）。
-final class BridgeTranslatorTests: XCTestCase {
+/// 核心 bridge 邏輯跑道：`BridgeTranslator.handle` 的訊息拆解 + 引擎委派（注入 mock、不碰真 `translationd`）。
+struct BridgeTranslatorTests {
 
 	/// 成功：`{id, source}` → `{id, text}`、無 error。
-	func testSuccessReturnsIdAndText() async {
+	@Test func successReturnsIDAndText() async {
 		let translator = BridgeTranslator(engine: MockEngine(shouldFail: false))
 		let out = await translator.handle(["id": "k1-0", "source": "Hello", "from": "en", "to": "zh-Hant"])
-		XCTAssertEqual(out["id"] as? String, "k1-0")
-		XCTAssertEqual(out["text"] as? String, "譯:Hello")
-		XCTAssertNil(out["error"])
+		#expect(out["id"] as? String == "k1-0")
+		#expect(out["text"] as? String == "譯:Hello")
+		#expect(out["error"] == nil)
 	}
 
 	/// 缺 id：回 error、無 id（無從對回、屬協定違規）。
-	func testMissingIdReturnsError() async {
+	@Test func missingIDReturnsError() async {
 		let translator = BridgeTranslator(engine: MockEngine(shouldFail: false))
 		let out = await translator.handle(["source": "Hello"])
-		XCTAssertNotNil(out["error"])
-		XCTAssertNil(out["id"])
+		#expect(out["error"] != nil)
+		#expect(out["id"] == nil)
 	}
 
 	/// 缺 source：回 `{id, error}`（保留 id 供 JS 端對回該段的失敗）。
-	func testMissingSourceReturnsIdAndError() async {
+	@Test func missingSourceReturnsIDAndError() async {
 		let translator = BridgeTranslator(engine: MockEngine(shouldFail: false))
 		let out = await translator.handle(["id": "k1-0"])
-		XCTAssertEqual(out["id"] as? String, "k1-0")
-		XCTAssertNotNil(out["error"])
-		XCTAssertNil(out["text"])
+		#expect(out["id"] as? String == "k1-0")
+		#expect(out["error"] != nil)
+		#expect(out["text"] == nil)
 	}
 
 	/// 引擎拋錯：回 `{id, error}`、無 text。
-	func testEngineFailureReturnsIdAndError() async {
+	@Test func engineFailureReturnsIDAndError() async {
 		let translator = BridgeTranslator(engine: MockEngine(shouldFail: true))
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
-		XCTAssertEqual(out["id"] as? String, "k1-0")
-		XCTAssertNotNil(out["error"])
-		XCTAssertNil(out["text"])
+		#expect(out["id"] as? String == "k1-0")
+		#expect(out["error"] != nil)
+		#expect(out["text"] == nil)
 	}
 
 	/// 預查 supported（語言包未下載）：回 `{id, error}` 含可行動提示、不進 translate。
-	func testStatusSupportedReturnsActionableError() async {
+	@Test func statusSupportedReturnsActionableError() async {
 		let translator = BridgeTranslator(engine: MockEngine(statusResult: .supported))
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
-		XCTAssertEqual(out["id"] as? String, "k1-0")
-		XCTAssertNil(out["text"])
-		XCTAssertTrue((out["error"] as? String)?.contains("語言包未下載") ?? false, "應給可行動的語言包提示")
+		#expect(out["id"] as? String == "k1-0")
+		#expect(out["text"] == nil)
+		#expect((out["error"] as? String)?.contains("語言包未下載") == true, "應給可行動的語言包提示")
 	}
 
 	/// 預查 unsupported：回 `{id, error}` 含不支援提示、不進 translate。
-	func testStatusUnsupportedReturnsActionableError() async {
+	@Test func statusUnsupportedReturnsActionableError() async {
 		let translator = BridgeTranslator(engine: MockEngine(statusResult: .unsupported))
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
-		XCTAssertEqual(out["id"] as? String, "k1-0")
-		XCTAssertNil(out["text"])
-		XCTAssertTrue((out["error"] as? String)?.contains("不支援") ?? false, "應給不支援組合提示")
+		#expect(out["id"] as? String == "k1-0")
+		#expect(out["text"] == nil)
+		#expect((out["error"] as? String)?.contains("不支援") == true, "應給不支援組合提示")
 	}
 
 	/// 不帶 from/to：走預設 en → zh-Hant、installed → 成功 `{id, text}`。
-	func testDefaultFromToSucceeds() async {
+	@Test func defaultFromToSucceeds() async {
 		let translator = BridgeTranslator(engine: MockEngine())
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
-		XCTAssertEqual(out["id"] as? String, "k1-0")
-		XCTAssertEqual(out["text"] as? String, "譯:Hello")
-		XCTAssertNil(out["error"])
+		#expect(out["id"] as? String == "k1-0")
+		#expect(out["text"] as? String == "譯:Hello")
+		#expect(out["error"] == nil)
 	}
 }

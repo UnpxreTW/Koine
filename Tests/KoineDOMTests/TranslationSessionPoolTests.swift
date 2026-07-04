@@ -7,19 +7,21 @@
 //  SPDX-License-Identifier: Apache-2.0
 
 import Foundation
+import Koine
 import Testing
 import Translation
 
-import Koine
+// MARK: - ConstructionCounter
 
 /// 執行緒安全的建構次數計數器（factory 是 `@Sendable` 同步閉包、不能進 actor，故用鎖）。
 private final class ConstructionCounter: @unchecked Sendable {
 
-	/// 保護 `value` 的鎖。
-	private let lock = NSLock()
-
-	/// 當前計數。
-	private var value = 0
+	/// 讀回當前計數。
+	var count: Int {
+		lock.lock()
+		defer { lock.unlock() }
+		return value
+	}
 
 	/// 計數 +1。
 	func increment() {
@@ -28,22 +30,25 @@ private final class ConstructionCounter: @unchecked Sendable {
 		value += 1
 	}
 
-	/// 讀回當前計數。
-	var count: Int {
-		lock.lock()
-		defer { lock.unlock() }
-		return value
-	}
+	/// 保護 `value` 的鎖。
+	private let lock: NSLock = .init()
+
+	/// 當前計數。
+	private var value = 0
+
 }
+
+// MARK: - TranslationSessionPoolTests
 
 /// `TranslationSessionPool` 複用邏輯跑道：注入計數 factory 觀測建構次數。
 /// 多數測試只建構 session、不碰真 `translationd`；唯 `errorInvalidatesCachedSession`
 /// 例外——靠真 `translationd` 對未安裝語言對快速拋錯來驗失效重建路徑。
-struct TranslationSessionPoolTests {
+private final class TranslationSessionPoolTests {
 
 	/// 同語言對重複取用：只建構一次（複用命中）。
-	@Test func samePairConstructsOnce() async {
-		let counter = ConstructionCounter()
+	@Test
+	private func `same pair constructs once`() async {
+		let counter: ConstructionCounter = .init()
 		let pool = TranslationSessionPool { source, target in
 			counter.increment()
 			return TranslationSession(installedSource: source, target: target)
@@ -56,8 +61,9 @@ struct TranslationSessionPoolTests {
 	}
 
 	/// 不同語言對各自建構、互不混用。
-	@Test func distinctPairsConstructSeparately() async {
-		let counter = ConstructionCounter()
+	@Test
+	private func `distinct pairs construct separately`() async {
+		let counter: ConstructionCounter = .init()
 		let pool = TranslationSessionPool { source, target in
 			counter.increment()
 			return TranslationSession(installedSource: source, target: target)
@@ -73,8 +79,9 @@ struct TranslationSessionPoolTests {
 
 	/// 譯出錯即失效：先證明 translate 吃快取（不自建）、出錯後才重建（計數 1 → 1 → 2）。
 	/// 用未安裝的語言對讓 `translationd` 快速拋錯——standalone init 路徑不彈 UI、不需語言包。
-	@Test func errorInvalidatesCachedSession() async {
-		let counter = ConstructionCounter()
+	@Test
+	private func `error invalidates cached session`() async {
+		let counter: ConstructionCounter = .init()
 		let pool = TranslationSessionPool { source, target in
 			counter.increment()
 			return TranslationSession(installedSource: source, target: target)
@@ -94,8 +101,9 @@ struct TranslationSessionPoolTests {
 	}
 
 	/// 方向性：A→B 與 B→A 是不同語言對、各自建構。
-	@Test func reversedPairConstructsSeparately() async {
-		let counter = ConstructionCounter()
+	@Test
+	private func `reversed pair constructs separately`() async {
+		let counter: ConstructionCounter = .init()
 		let pool = TranslationSessionPool { source, target in
 			counter.increment()
 			return TranslationSession(installedSource: source, target: target)

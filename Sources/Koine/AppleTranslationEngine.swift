@@ -19,6 +19,7 @@ import Translation
 /// 呼叫端可先以 `status(from:to:)` 預查、把失敗轉成可行動的提示。
 public struct AppleTranslationEngine: TranslationEngine {
 
+	/// 無狀態建構（v1 無可注入依賴；session 快取由進程級 `TranslationSessionPool` 管）。
 	public init() {}
 
 	/// 預查語言組合可用性（standalone init 並非 throws、錯誤會延後到 `translate` 才爆，
@@ -35,13 +36,12 @@ public struct AppleTranslationEngine: TranslationEngine {
 		}
 	}
 
+	/// 委派進程級 `TranslationSessionPool` 以複用 session（每句重建實測多耗約 50ms）。
 	public func translate(
 		_ text: String,
 		from source: Locale.Language,
 		to target: Locale.Language
 	) async throws -> String {
-		let session = TranslationSession(installedSource: source, target: target)
-		let response = try await session.translate(text)
-		return response.targetText
+		try await TranslationSessionPool.shared.translate(text, from: source, to: target)
 	}
 }

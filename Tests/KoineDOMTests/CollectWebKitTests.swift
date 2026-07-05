@@ -6,8 +6,11 @@
 //
 //  SPDX-License-Identifier: Apache-2.0
 
+// swiftformat:disable preferSwiftTesting -- WKWebView 驅動需 XCTestCase lifecycle、XCTest 為刻意保留（見測試框架慣例）
 import WebKit
 import XCTest
+
+// MARK: - ProtectedSpan
 
 /// 比對用 protected span：`code` / `time` 等不可分割原子在 source 字串內的字元範圍。
 private struct ProtectedSpan: Decodable, Equatable {
@@ -21,6 +24,8 @@ private struct ProtectedSpan: Decodable, Equatable {
 	/// 原子種類（`code` / `time`）。
 	let kind: String
 }
+
+// MARK: - NormSeg
 
 /// golden 比對形狀：對齊跑道 A `helpers.normalize`（留 order / source / state，丟 anchor 與 id）。
 private struct NormSeg: Decodable, Equatable {
@@ -41,6 +46,8 @@ private struct NormSeg: Decodable, Equatable {
 	let protectedSpans: [ProtectedSpan]?
 }
 
+// MARK: - RenderResult
+
 /// render 插回往返驗證形狀：採集 → 塞假 draft → `insertTranslations` → 二次採集的各階段計數（§7.1）。
 private struct RenderResult: Decodable {
 
@@ -60,6 +67,8 @@ private struct RenderResult: Decodable {
 	let leaked: Int
 }
 
+// MARK: - ObserveResult
+
 /// observe 進場驗證形狀：pending 段數 vs 真 IntersectionObserver 觸發 onEnter 的段數。
 private struct ObserveResult: Decodable {
 
@@ -69,6 +78,8 @@ private struct ObserveResult: Decodable {
 	/// 進場觸發 onEnter 的段數。
 	let entered: Int
 }
+
+// MARK: - Manifest
 
 /// fixture 清單（`manifest.json` 解碼）。
 private struct Manifest: Decodable {
@@ -89,6 +100,8 @@ private struct Manifest: Decodable {
 	/// 全部 fixture 條目。
 	let cases: [Case]
 }
+
+// MARK: - Source
 
 /// 來源路徑解析：`#filePath` → repo root，再相對取 content.js / fixture / golden / manifest。
 private enum Source {
@@ -124,62 +137,64 @@ private enum Source {
 
 /// driver：以真 `getComputedStyle` 跑採集、回 normalize 後 JSON（與跑道 A `helpers.normalize` 同欄位）。
 private let driverJS = """
-(() => {
-  const k = globalThis.__koine__;
-  const ctx = k.makeContext({ targetLang: 'zh-Hant' });
-  const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
-  return JSON.stringify(segs.map((s) => {
-    const o = { order: s.order, source: s.source, state: s.state };
-    if (s.meta && s.meta.skipReason) o.skipReason = s.meta.skipReason;
-    if (s.meta && s.meta.protectedSpans) o.protectedSpans = s.meta.protectedSpans;
-    return o;
-  }));
-})();
-"""
+	(() => {
+	  const k = globalThis.__koine__;
+	  const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+	  const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
+	  return JSON.stringify(segs.map((s) => {
+	    const o = { order: s.order, source: s.source, state: s.state };
+	    if (s.meta && s.meta.skipReason) o.skipReason = s.meta.skipReason;
+	    if (s.meta && s.meta.protectedSpans) o.protectedSpans = s.meta.protectedSpans;
+	    return o;
+	  }));
+	})();
+	"""
 
 /// render driver：採集 → 對 pending 段塞假 draft（前綴標記）並轉 `drafted` → `insertTranslations`
-/// 插回 → 以新 walkId 二次採集；回各階段計數（JSON）供自吞往返斷言（§7.1）。
+/// 插回 → 以新 `walkId` 二次採集；回各階段計數（JSON）供自吞往返斷言（§7.1）。
 private let renderDriverJS = """
-(() => {
-  const k = globalThis.__koine__;
-  const ctx = k.makeContext({ targetLang: 'zh-Hant' });
-  const MARK = '@@TR@@';
-  const first = k.collectSegments(document.body, ctx, { walkId: 1 });
-  let drafted = 0;
-  for (const s of first) {
-    if (s.state === k.SegmentState.PENDING) {
-      s.draft = MARK + s.source;
-      s.state = k.SegmentState.DRAFTED;
-      drafted++;
-    }
-  }
-  const inserted = k.insertTranslations(first);
-  const second = k.collectSegments(document.body, ctx, { walkId: 2 });
-  const leaked = second.filter((s) => s.source.indexOf(MARK) !== -1).length;
-  return JSON.stringify({
-    firstCount: first.length, drafted: drafted, inserted: inserted.length,
-    secondCount: second.length, leaked: leaked,
-  });
-})();
-"""
+	(() => {
+	  const k = globalThis.__koine__;
+	  const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+	  const MARK = '@@TR@@';
+	  const first = k.collectSegments(document.body, ctx, { walkId: 1 });
+	  let drafted = 0;
+	  for (const s of first) {
+	    if (s.state === k.SegmentState.PENDING) {
+	      s.draft = MARK + s.source;
+	      s.state = k.SegmentState.DRAFTED;
+	      drafted++;
+	    }
+	  }
+	  const inserted = k.insertTranslations(first);
+	  const second = k.collectSegments(document.body, ctx, { walkId: 2 });
+	  const leaked = second.filter((s) => s.source.indexOf(MARK) !== -1).length;
+	  return JSON.stringify({
+	    firstCount: first.length, drafted: drafted, inserted: inserted.length,
+	    secondCount: second.length, leaked: leaked,
+	  });
+	})();
+	"""
 
 /// observe driver（`callAsyncJavaScript` body，await 真 IntersectionObserver）：採集 → 對 pending 段掛
 /// `observeSegments`（走瀏覽器預設 IntersectionObserver）→ 收進場 onEnter 觸發數；全進場或 2s timeout 回報。
 private let observeBody = """
-const k = globalThis.__koine__;
-const ctx = k.makeContext({ targetLang: 'zh-Hant' });
-const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
-const pending = segs.filter((s) => s.state === k.SegmentState.PENDING);
-return await new Promise((resolve) => {
-  const entered = [];
-  const done = () => resolve(JSON.stringify({ pending: pending.length, entered: entered.length }));
-  if (pending.length === 0) { done(); return; }
-  k.observeSegments(segs, {
-    onEnter: (s) => { entered.push(s.id); if (entered.length === pending.length) done(); },
-  });
-  setTimeout(done, 2000);
-});
-"""
+	const k = globalThis.__koine__;
+	const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+	const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
+	const pending = segs.filter((s) => s.state === k.SegmentState.PENDING);
+	return await new Promise((resolve) => {
+	  const entered = [];
+	  const done = () => resolve(JSON.stringify({ pending: pending.length, entered: entered.length }));
+	  if (pending.length === 0) { done(); return; }
+	  k.observeSegments(segs, {
+	    onEnter: (s) => { entered.push(s.id); if (entered.length === pending.length) done(); },
+	  });
+	  setTimeout(done, 2000);
+	});
+	"""
+
+// MARK: - NavDelegate
 
 /// `loadHTMLString` 完成回呼橋接（`navigationDelegate` 為 weak，呼叫端需保強參考至完成）。
 private final class NavDelegate: NSObject, WKNavigationDelegate {
@@ -193,6 +208,8 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 	}
 }
 
+// MARK: - CollectWebKitTests
+
 /// 採集層跑道 B（WKWebView / 真 WebKit）：載 fixture HTML → 注入 content.js（universal script，
 /// 設 `globalThis.__koine__`、`main()` 因無 browser API 不自動跑）→ driver 以真 `getComputedStyle`
 /// 跑 `collectSegments` → JSON 回 Swift 比對 golden。
@@ -201,26 +218,7 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 @MainActor
 final class CollectWebKitTests: XCTestCase {
 
-	/// 載入 HTML 並 await 導航完成（保留 delegate 強參考至完成）。
-	private func load(_ webView: WKWebView, html: String) async {
-		let delegate = NavDelegate()
-		webView.navigationDelegate = delegate
-		await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-			delegate.onFinish = { cont.resume() }
-			webView.loadHTMLString(html, baseURL: nil)
-		}
-		// 保留 delegate 強參考至導航完成（navigationDelegate 為 weak）。
-		withExtendedLifetime(delegate) {}
-	}
-
-	/// 載入指定 fixture、注入 content.js、跑 driver，回 normalize 後段落。
-	private func collect(fixture name: String) async throws -> [NormSeg] {
-		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
-		await load(webView, html: try Source.fixtureHTML(name))
-		_ = try await webView.evaluateJavaScript(Source.contentJS())
-		let json = try await webView.evaluateJavaScript(driverJS) as? String ?? "[]"
-		return try JSONDecoder().decode([NormSeg].self, from: Data(json.utf8))
-	}
+	// MARK: Internal
 
 	/// 所有 lane b / both fixture：真 WebKit 採集對齊 golden（§11.1 both case 過同一份 golden）。
 	func testFixturesAgainstGolden() async throws {
@@ -235,8 +233,8 @@ final class CollectWebKitTests: XCTestCase {
 
 	/// 並列插回往返：真 WebKit 採集 → 插回譯文 wrapper → 二次採集應 0 新段（§7.1 自吞防護）。
 	func testRenderInsertThenRecollect() async throws {
-		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
-		await load(webView, html: try Source.fixtureHTML("01-basic-paragraphs"))
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		try await load(webView, html: Source.fixtureHTML("01-basic-paragraphs"))
 		_ = try await webView.evaluateJavaScript(Source.contentJS())
 		let json = try await webView.evaluateJavaScript(renderDriverJS) as? String ?? "{}"
 		let result = try JSONDecoder().decode(RenderResult.self, from: Data(json.utf8))
@@ -252,8 +250,8 @@ final class CollectWebKitTests: XCTestCase {
 
 	/// 進場觀察跑道 B：真 IntersectionObserver 對所有 pending 段觸發 onEnter（§10 lazy 進場）。
 	func testObserveEntersPendingSegments() async throws {
-		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
-		await load(webView, html: try Source.fixtureHTML("01-basic-paragraphs"))
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		try await load(webView, html: Source.fixtureHTML("01-basic-paragraphs"))
 		_ = try await webView.evaluateJavaScript(Source.contentJS())
 		let raw = try await webView.callAsyncJavaScript(observeBody, arguments: [:], in: nil, contentWorld: .page)
 		let json = raw as? String ?? "{}"
@@ -264,19 +262,44 @@ final class CollectWebKitTests: XCTestCase {
 
 	/// SPEC §1 實測基準 smoke：照抄者以此為準的關鍵值，對齊真 WebKit。
 	func testDisplayBaselineSmoke() async throws {
-		let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
 		let html = "<div style='display:flex'><span id='ib' style='display:inline-block'>x</span></div>"
 			+ "<ruby>漢<rt id='rt'>k</rt></ruby>"
 		await load(webView, html: html)
 		let inlineBlockDisplay = try await webView.evaluateJavaScript(
-			"getComputedStyle(document.getElementById('ib')).display") as? String
+			"getComputedStyle(document.getElementById('ib')).display"
+		) as? String
 		let rubyTextDisplay = try await webView.evaluateJavaScript(
-			"getComputedStyle(document.getElementById('rt')).display") as? String
+			"getComputedStyle(document.getElementById('rt')).display"
+		) as? String
 		XCTAssertEqual(inlineBlockDisplay, "block", "inline-block 在 flex 容器內被 blockify（SPEC §1 A1）")
 		XCTAssertEqual(
 			rubyTextDisplay,
 			"ruby-text",
 			"rt → ruby-text（真 WKWebView/系統 WebKit 實證；SPEC §1 A3 的 Playwright 值 inline 在系統 WebKit 不成立）"
 		)
+	}
+
+	// MARK: Private
+
+	/// 載入 HTML 並 await 導航完成（保留 delegate 強參考至完成）。
+	private func load(_ webView: WKWebView, html: String) async {
+		let delegate: NavDelegate = .init()
+		webView.navigationDelegate = delegate
+		await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+			delegate.onFinish = { cont.resume() }
+			webView.loadHTMLString(html, baseURL: nil)
+		}
+		// 保留 delegate 強參考至導航完成（navigationDelegate 為 weak）。
+		withExtendedLifetime(delegate) {}
+	}
+
+	/// 載入指定 fixture、注入 content.js、跑 driver，回 normalize 後段落。
+	private func collect(fixture name: String) async throws -> [NormSeg] {
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		try await load(webView, html: Source.fixtureHTML(name))
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+		let json = try await webView.evaluateJavaScript(driverJS) as? String ?? "[]"
+		return try JSONDecoder().decode([NormSeg].self, from: Data(json.utf8))
 	}
 }

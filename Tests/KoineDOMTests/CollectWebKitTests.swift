@@ -6,9 +6,8 @@
 //
 //  SPDX-License-Identifier: Apache-2.0
 
-// swiftformat:disable preferSwiftTesting -- WKWebView 驅動需 XCTestCase lifecycle、XCTest 為刻意保留（見測試框架慣例）
+import Testing
 import WebKit
-import XCTest
 
 // MARK: - ProtectedSpan
 
@@ -216,52 +215,50 @@ private final class NavDelegate: NSObject, WKNavigationDelegate {
 ///
 /// fixture / golden / content.js 由 `#filePath` 相對讀源檔本身（本機 dev 測試、非 CI 攜帶）。
 @MainActor
-final class CollectWebKitTests: XCTestCase {
-
-	// MARK: Internal
+private final class CollectWebKitTests {
 
 	/// 所有 lane b / both fixture：真 WebKit 採集對齊 golden（§11.1 both case 過同一份 golden）。
-	func testFixturesAgainstGolden() async throws {
+	@Test
+	private func `fixtures against golden`() async throws {
 		let cases = try Source.manifest().cases.filter { $0.lane == "b" || $0.lane == "both" }
-		XCTAssertFalse(cases.isEmpty, "manifest 無 b/both case")
+		#expect(!cases.isEmpty, "manifest 無 b/both case")
 		for testCase in cases {
 			let got = try await collect(fixture: testCase.name)
 			let want = try Source.golden(testCase.name)
-			XCTAssertEqual(got, want, "fixture \(testCase.name)（\(testCase.desc)）與 golden 不符")
+			#expect(got == want, "fixture \(testCase.name)（\(testCase.desc)）與 golden 不符")
 		}
 	}
 
 	/// 並列插回往返：真 WebKit 採集 → 插回譯文 wrapper → 二次採集應 0 新段（§7.1 自吞防護）。
-	func testRenderInsertThenRecollect() async throws {
+	@Test
+	private func `render insert then recollect`() async throws {
 		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
 		try await load(webView, html: Source.fixtureHTML("01-basic-paragraphs"))
 		_ = try await webView.evaluateJavaScript(Source.contentJS())
 		let json = try await webView.evaluateJavaScript(renderDriverJS) as? String ?? "{}"
 		let result = try JSONDecoder().decode(RenderResult.self, from: Data(json.utf8))
-		XCTAssertGreaterThan(result.drafted, 0, "fixture 應至少有一段 pending 可 draft")
-		XCTAssertEqual(result.inserted, result.drafted, "插入 wrapper 數應 = drafted 段數")
-		XCTAssertEqual(
-			result.secondCount,
-			result.firstCount,
-			"render 後再採集應 0 新段（wrapper 全被 classifyNode [1] 擋）"
-		)
-		XCTAssertEqual(result.leaked, 0, "二次採集不得撈到任何譯文（自吞防護 §7.1 c）")
+		#expect(result.drafted > 0, "fixture 應至少有一段 pending 可 draft")
+		#expect(result.inserted == result.drafted, "插入 wrapper 數應 = drafted 段數")
+		#expect(result.secondCount == result.firstCount, "render 後再採集應 0 新段（wrapper 全被 classifyNode [1] 擋）")
+		#expect(result.leaked == 0, "二次採集不得撈到任何譯文（自吞防護 §7.1 c）")
 	}
 
 	/// 進場觀察跑道 B：真 IntersectionObserver 對所有 pending 段觸發 onEnter（§10 lazy 進場）。
-	func testObserveEntersPendingSegments() async throws {
+	@Test
+	private func `observe enters pending segments`() async throws {
 		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
 		try await load(webView, html: Source.fixtureHTML("01-basic-paragraphs"))
 		_ = try await webView.evaluateJavaScript(Source.contentJS())
 		let raw = try await webView.callAsyncJavaScript(observeBody, arguments: [:], in: nil, contentWorld: .page)
 		let json = raw as? String ?? "{}"
 		let result = try JSONDecoder().decode(ObserveResult.self, from: Data(json.utf8))
-		XCTAssertGreaterThan(result.pending, 0, "fixture 應有 pending 段")
-		XCTAssertEqual(result.entered, result.pending, "真 IntersectionObserver 應對所有 pending 段觸發 onEnter（進場）")
+		#expect(result.pending > 0, "fixture 應有 pending 段")
+		#expect(result.entered == result.pending, "真 IntersectionObserver 應對所有 pending 段觸發 onEnter（進場）")
 	}
 
 	/// SPEC §1 實測基準 smoke：照抄者以此為準的關鍵值，對齊真 WebKit。
-	func testDisplayBaselineSmoke() async throws {
+	@Test
+	private func `display baseline smoke`() async throws {
 		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
 		let html = "<div style='display:flex'><span id='ib' style='display:inline-block'>x</span></div>"
 			+ "<ruby>漢<rt id='rt'>k</rt></ruby>"
@@ -272,15 +269,12 @@ final class CollectWebKitTests: XCTestCase {
 		let rubyTextDisplay = try await webView.evaluateJavaScript(
 			"getComputedStyle(document.getElementById('rt')).display"
 		) as? String
-		XCTAssertEqual(inlineBlockDisplay, "block", "inline-block 在 flex 容器內被 blockify（SPEC §1 A1）")
-		XCTAssertEqual(
-			rubyTextDisplay,
-			"ruby-text",
+		#expect(inlineBlockDisplay == "block", "inline-block 在 flex 容器內被 blockify（SPEC §1 A1）")
+		#expect(
+			rubyTextDisplay == "ruby-text",
 			"rt → ruby-text（真 WKWebView/系統 WebKit 實證；SPEC §1 A3 的 Playwright 值 inline 在系統 WebKit 不成立）"
 		)
 	}
-
-	// MARK: Private
 
 	/// 載入 HTML 並 await 導航完成（保留 delegate 強參考至完成）。
 	private func load(_ webView: WKWebView, html: String) async {

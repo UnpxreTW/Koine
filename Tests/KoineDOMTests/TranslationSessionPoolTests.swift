@@ -35,7 +35,6 @@ private final class ConstructionCounter: @unchecked Sendable {
 
 	/// 當前計數。
 	private var value = 0
-
 }
 
 // MARK: - TranslationSessionPoolTests

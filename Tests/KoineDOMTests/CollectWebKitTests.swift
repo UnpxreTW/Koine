@@ -302,5 +302,4 @@ final class CollectWebKitTests: XCTestCase {
 		let json = try await webView.evaluateJavaScript(driverJS) as? String ?? "[]"
 		return try JSONDecoder().decode([NormSeg].self, from: Data(json.utf8))
 	}
-
 }

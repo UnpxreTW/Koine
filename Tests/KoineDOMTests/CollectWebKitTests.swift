@@ -78,6 +78,28 @@ private struct ObserveResult: Decodable {
 	let entered: Int
 }
 
+// MARK: - EnterOrderResult
+
+/// P3 進場順序驗證形狀：pending 段數＋依 dispatch 序記錄的（order, region）串。
+private struct EnterOrderResult: Decodable {
+
+	/// 單筆 dispatch 記錄。
+	struct EnteredSeg: Decodable {
+
+		/// 段的文件序。
+		let order: Int
+
+		/// 段的區域分類（`main` / `chrome`）。
+		let region: String
+	}
+
+	/// 採集得到的 pending（待譯）段數。
+	let pending: Int
+
+	/// 依 dispatch 序的進場記錄。
+	let entered: [EnteredSeg]
+}
+
 // MARK: - Manifest
 
 /// fixture 清單（`manifest.json` 解碼）。
@@ -193,6 +215,28 @@ private let observeBody = """
 	});
 	"""
 
+/// P3 進場順序 driver（`callAsyncJavaScript` body）：採集 → `observeSegments`（預設 eager +
+/// tiered IO + priorityGate、真 IntersectionObserver）→ 依 dispatch 序記（order, region）；
+/// 全 pending 進場或 3s timeout 回報（§10.1 / §10.2）。
+private let enterOrderBody = """
+	const k = globalThis.__koine__;
+	const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+	const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
+	const pending = segs.filter((s) => s.state === k.SegmentState.PENDING);
+	return await new Promise((resolve) => {
+	  const entered = [];
+	  const done = () => resolve(JSON.stringify({ pending: pending.length, entered: entered }));
+	  if (pending.length === 0) { done(); return; }
+	  k.observeSegments(segs, {
+	    onEnter: (s) => {
+	      entered.push({ order: s.order, region: s.region });
+	      if (entered.length === pending.length) done();
+	    },
+	  });
+	  setTimeout(done, 3000);
+	});
+	"""
+
 // MARK: - NavDelegate
 
 /// `loadHTMLString` 完成回呼橋接（`navigationDelegate` 為 weak，呼叫端需保強參考至完成）。
@@ -254,6 +298,35 @@ private final class CollectWebKitTests {
 		let result = try JSONDecoder().decode(ObserveResult.self, from: Data(json.utf8))
 		#expect(result.pending > 0, "fixture 應有 pending 段")
 		#expect(result.entered == result.pending, "真 IntersectionObserver 應對所有 pending 段觸發 onEnter（進場）")
+	}
+
+	/// P3 進場順序（§10.1/§10.2）：主文（`<main>`、全數落 eager 預算內）先出且依文件序；
+	/// 視窗下方 400px 內的 footer（chrome）之後仍進場（順序非範圍）、排在全部 main 之後。
+	@Test
+	private func `p3 enter order: main eager first, chrome after`() async throws {
+		// 版面固定高（layout 確定性）：main 10 段 × 60px = 600px（前 12 屏內）、spacer 300px、
+		// footer 起點 ~900px——在視窗（768px）外、chrome IO rootMargin（400px）內。
+		let mainParagraphs = (0 ..< 10)
+			.map { "<p style='margin:0;height:60px'>Main content paragraph number \($0) with enough words.</p>" }
+			.joined()
+		let html = "<body style='margin:0'><main>\(mainParagraphs)</main>"
+			+ "<div style='height:300px'></div>"
+			+ "<footer><p style='margin:0'>Footer copyright notice text</p>"
+			+ "<p style='margin:0'><a href='#'>About this project</a> <a href='#'>Contact the team</a></p>"
+			+ "</footer></body>"
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		await load(webView, html: html)
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+		let raw = try await webView.callAsyncJavaScript(enterOrderBody, arguments: [:], in: nil, contentWorld: .page)
+		let json = raw as? String ?? "{}"
+		let result = try JSONDecoder().decode(EnterOrderResult.self, from: Data(json.utf8))
+		let mains = result.entered.filter { $0.region == "main" }
+		let chromes = result.entered.filter { $0.region == "chrome" }
+		#expect(result.pending == 12, "前提：10 main + 2 footer 段皆 pending")
+		#expect(result.entered.count == result.pending, "全 pending 進場（chrome 降權仍翻、順序非範圍）")
+		#expect(mains.count == 10 && chromes.count == 2, "region 分類：main 10、chrome 2")
+		#expect(result.entered.prefix(10).allSatisfy { $0.region == "main" }, "全部 main 先於全部 chrome（eager + regionRank）")
+		#expect(mains.map(\.order) == mains.map(\.order).sorted(), "main 依文件序 dispatch（eager 文件序前 N + order tie-break）")
 	}
 
 	/// SPEC §1 實測基準 smoke：照抄者以此為準的關鍵值，對齊真 WebKit。

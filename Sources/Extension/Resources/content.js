@@ -312,6 +312,107 @@ function isAlreadyTargetLang(el) {
 }
 
 // ============================================================================
+// §6.5 classifyRegion 區域分類（P3）：Segment 標 main / chrome，供 §10 排程消費
+// ============================================================================
+
+/** @typedef {'main'|'chrome'} RegionValue */
+
+/** Region enum（UNKNOWN 折進 MAIN）。順序非範圍：chrome 降權後仍翻、不跳過。 */
+const Region = Object.freeze({ MAIN: "main", CHROME: "chrome" });
+
+/** §6.5 landmark tag 對照（最近祖先勝：`<article><nav>` 內 TOC 判 CHROME）。 */
+const REGION_MAIN_TAGS = new Set(["MAIN", "ARTICLE"]);
+const REGION_CHROME_TAGS = new Set(["NAV", "HEADER", "FOOTER", "ASIDE"]);
+/** §6.5 landmark ARIA role 對照（banner=header、contentinfo=footer、complementary=aside）。 */
+const REGION_MAIN_ROLES = new Set(["main", "article"]);
+const REGION_CHROME_ROLES = new Set(["navigation", "banner", "contentinfo", "complementary", "search"]);
+
+// §6.5 訊號① class/id regex（Readability unlikelyCandidates 式）。
+// MAIN 先查＝both-match 偏 MAIN（非對稱預設的低害側，同 Readability okMaybeItsACandidate 救回）。
+const RE_REGION_MAIN_HINT = /article|content|post|main|story|body|entry/i;
+const RE_REGION_CHROME_HINT = /nav|menu|sidebar|footer|header|breadcrumb|widget|banner|promo|social|comment/i;
+
+/**
+ * 元素自身的 landmark region；非 landmark 回 null。role 先於 tag（顯式 ARIA 覆蓋隱式語意）。
+ * @param {Element} el
+ * @returns {RegionValue|null}
+ */
+function landmarkRegionOf(el) {
+	if (typeof el.getAttribute === "function") {
+		const role = el.getAttribute("role");
+		if (role) {
+			const r = role.toLowerCase().trim();
+			if (REGION_MAIN_ROLES.has(r)) return Region.MAIN;
+			if (REGION_CHROME_ROLES.has(r)) return Region.CHROME;
+		}
+	}
+	const tag = el.tagName;
+	if (REGION_MAIN_TAGS.has(tag)) return Region.MAIN;
+	if (REGION_CHROME_TAGS.has(tag)) return Region.CHROME;
+	return null;
+}
+
+/**
+ * 元素自身的 class/id hint（§6.5 訊號①）；無訊號回 null。
+ * @param {Element} el
+ * @returns {RegionValue|null}
+ */
+function regionHintOf(el) {
+	const cls = typeof el.className === "string" ? el.className : "";
+	const id = el.id || "";
+	if (!cls && !id) return null;
+	const s = cls + " " + id;
+	if (RE_REGION_MAIN_HINT.test(s)) return Region.MAIN;
+	if (RE_REGION_CHROME_HINT.test(s)) return Region.CHROME;
+	return null;
+}
+
+/**
+ * §6.5 cascade 第 2/3 步：無 landmark 祖先時的三訊號 layout-free 評分（不讀 rect）。
+ * ① 最近 class/id hint ±2；② link-density > 0.5 → CHROME +2；③ 文字長 >120 → MAIN +2、<40 → CHROME +1。
+ * 同分/零訊號 → MAIN（非對稱預設：main 誤判 chrome 餓死正文＝高害、反向只是早譯＝低害）。
+ * @param {Element} block
+ * @param {RegionValue|null} hint  最近 class/id hint（含自身；由 walk stack 或 walk-up 提供）
+ * @returns {RegionValue}
+ */
+function heuristicRegion(block, hint) {
+	let main = 0;
+	let chrome = 0;
+	if (hint === Region.MAIN) main += 2;
+	else if (hint === Region.CHROME) chrome += 2;
+	const text = (block.textContent || "").trim();
+	const len = text.length;
+	if (len > 0 && typeof block.querySelectorAll === "function") {
+		let linkLen = 0;
+		for (const a of block.querySelectorAll("a")) linkLen += (a.textContent || "").trim().length;
+		if (linkLen / len > 0.5) chrome += 2;
+	}
+	if (len > 120) main += 2;
+	else if (len < 40) chrome += 1;
+	return chrome > main ? Region.CHROME : Region.MAIN;
+}
+
+/**
+ * §6.5 完整 cascade（walk-up 形；採集熱路徑用 walkAndLabel 下行 stack 增量等價版、O(1)/段）：
+ * 1 最近 landmark 祖先（含自身）首個命中即定 → 2 無 landmark 時三訊號評分 → 3 不確定 MAIN。
+ * @param {Element} el  段的 anchor.block
+ * @returns {RegionValue}
+ */
+function classifyRegion(el) {
+	for (let n = el; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
+		const r = landmarkRegionOf(n);
+		if (r) return r;
+	}
+	/** @type {RegionValue|null} */
+	let hint = null;
+	for (let n = el; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
+		hint = regionHintOf(n);
+		if (hint) break;
+	}
+	return heuristicRegion(el, hint);
+}
+
+// ============================================================================
 // §9 Segment IR
 // ============================================================================
 
@@ -332,6 +433,7 @@ const SegmentState = Object.freeze({
  * @typedef {object} Segment
  * @property {string} id
  * @property {number} order
+ * @property {RegionValue} region   // §6.5 / §9.1：採集期算、留 JS 端不過 bridge
  * @property {string} source
  * @property {object} anchor
  * @property {string} state
@@ -348,52 +450,80 @@ function* childNodes(node) {
 }
 
 /**
- * 第一遍：標籤 + forceBlock 上傳 + 算 hasBlockDescendant。
- * 回傳 labels：WeakMap<node, { disp, cs, isBlock }>，isBlock = shallow block ∨ 含 block 子（forceBlock 上傳）。
+ * @typedef {object} NodeLabel
+ * @property {NodeDisposition} disp
+ * @property {StyleInfo|null} cs
+ * @property {boolean} isBlock         // shallow block ∨ 含 block 子（forceBlock 上傳）
+ * @property {RegionValue|null} region     // §6.5 最近 landmark 祖先（含自身）；無 landmark 為 null
+ * @property {RegionValue|null} regionHint // §6.5 最近 class/id hint（含自身）；無訊號為 null
+ */
+
+/**
+ * 第一遍：標籤 + forceBlock 上傳 + 算 hasBlockDescendant + region landmark/hint 下行增量（§6.5）。
  * @param {Node} root
  * @param {CollectContext} ctx
- * @returns {WeakMap<Node, { disp: NodeDisposition, cs: StyleInfo|null, isBlock: boolean }>}
+ * @returns {WeakMap<Node, NodeLabel>}
  */
 function walkAndLabel(root, ctx) {
-	/** @type {WeakMap<Node, { disp: NodeDisposition, cs: StyleInfo|null, isBlock: boolean }>} */
+	/** @type {WeakMap<Node, NodeLabel>} */
 	const labels = new WeakMap();
 
-	/** @returns {boolean} hasBlockDescendant（含自身為 block） */
-	function visit(node) {
+	// §6.5 region 初始 context：root 祖先鏈的最近 landmark / hint（root 自身由 visit 首層算）。
+	/** @type {RegionValue|null} */
+	let rootLandmark = null;
+	/** @type {RegionValue|null} */
+	let rootHint = null;
+	const rootEl = /** @type {Element} */ (root);
+	for (let n = rootEl.parentElement; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
+		if (!rootLandmark) rootLandmark = landmarkRegionOf(n);
+		if (!rootHint) rootHint = regionHintOf(n);
+		if (rootLandmark && rootHint) break;
+	}
+
+	/**
+	 * @param {Node} node
+	 * @param {RegionValue|null} landmark  繼承的最近 landmark region
+	 * @param {RegionValue|null} hint      繼承的最近 class/id hint
+	 * @returns {boolean} hasBlockDescendant（含自身為 block）
+	 */
+	function visit(node, landmark, hint) {
 		const { disp, cs } = classifyNode(node, ctx);
 		if (disp === "SKIP_SUBTREE") {
-			labels.set(node, { disp, cs, isBlock: false });
+			labels.set(node, { disp, cs, isBlock: false, region: landmark, regionHint: hint });
 			return false;
 		}
 		if (disp === "OPAQUE_INLINE") {
-			labels.set(node, { disp, cs, isBlock: false });
+			labels.set(node, { disp, cs, isBlock: false, region: landmark, regionHint: hint });
 			return false; // 不展開、不可分割、視為 inline
 		}
 		// WALK
 		if (node.nodeType === NODE_TEXT) {
-			labels.set(node, { disp, cs, isBlock: false });
+			labels.set(node, { disp, cs, isBlock: false, region: landmark, regionHint: hint });
 			return false;
 		}
 
 		const el = /** @type {Element} */ (node);
+		// §6.5 下行增量：最近者勝（更近 landmark / hint 覆蓋繼承值）、O(1)/段。
+		const region = landmarkRegionOf(el) || landmark;
+		const nearHint = regionHintOf(el) || hint;
 		let hasBlockChild = false;
 		for (const child of childNodes(el)) {
-			if (visit(child)) hasBlockChild = true;
+			if (visit(child, region, nearHint)) hasBlockChild = true;
 		}
 		if (el.shadowRoot) {
 			for (const child of childNodes(el.shadowRoot)) {
-				if (visit(child)) hasBlockChild = true;
+				if (visit(child, region, nearHint)) hasBlockChild = true;
 			}
 		}
 
 		const shallowBlock = isShallowBlock(el, cs);
 		// forceBlock 上傳：自身 block，或含 block 子（混排）→ 走 block flush 分支。
 		const isBlock = shallowBlock || hasBlockChild;
-		labels.set(node, { disp, cs, isBlock });
+		labels.set(node, { disp, cs, isBlock, region, regionHint: nearHint });
 		return isBlock;
 	}
 
-	visit(root);
+	visit(root, rootLandmark, rootHint);
 	return labels;
 }
 
@@ -426,7 +556,20 @@ function collectSegments(root, ctx, opts = {}) {
 		const { disp, cs } = classifyNode(node, c);
 		const isBlock = node.nodeType === NODE_ELEMENT && disp === "WALK"
 			&& isShallowBlock(/** @type {Element} */ (node), cs);
-		return { disp, cs, isBlock };
+		return { disp, cs, isBlock, region: null, regionHint: null };
+	}
+	/**
+	 * §6.5 段 region：landmark 由第一遍 walk stack 增量取得；無 landmark 時 flush 點三訊號評分。
+	 * @param {Node} blockNode
+	 * @returns {RegionValue}
+	 */
+	function regionOfBlock(blockNode) {
+		if (!blockNode || blockNode.nodeType !== NODE_ELEMENT) return Region.MAIN;
+		const el = /** @type {Element} */ (blockNode);
+		const label = labels.get(blockNode);
+		if (label && label.region) return label.region;
+		if (label) return heuristicRegion(el, label.regionHint);
+		return classifyRegion(el); // 不在 labels（防禦路徑）→ 完整 walk-up cascade
 	}
 
 	function collect(node) {
@@ -459,9 +602,10 @@ function collectSegments(root, ctx, opts = {}) {
 		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
 		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh });
 		const id = makeId(walkId, order);
+		const region = regionOfBlock(blockNode);
 		if (!wt.worth) {
 			segments.push({
-				id, order, source, anchor: makeAnchor(buf, blockNode),
+				id, order, region, source, anchor: makeAnchor(buf, blockNode),
 				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 			});
 			order++;
@@ -469,7 +613,7 @@ function collectSegments(root, ctx, opts = {}) {
 		}
 		/** @type {Segment} */
 		const seg = {
-			id, order, source, anchor: makeAnchor(buf, blockNode), state: SegmentState.PENDING,
+			id, order, region, source, anchor: makeAnchor(buf, blockNode), state: SegmentState.PENDING,
 		};
 		if (spans.length) seg.meta = { protectedSpans: spans, charCount: source.length };
 		segments.push(seg);
@@ -581,8 +725,18 @@ function insertTranslations(segments, opts = {}) {
 }
 
 // ============================================================================
-// §10 進場觀察（IntersectionObserver + 併發閘門；lazy 進場才觸發取譯）
+// §10 進場排程（P3 tiered dispatch + priorityGate；lazy 進場才觸發取譯）
 // ============================================================================
+
+/** §10.1 eager 預算：文件序前 N 個 MAIN pending 段載入即發（chrome 永不 eager）。 */
+const EAGER_MAIN_BUDGET = 10;
+/** §10.1 tiered IO rootMargin：main 讀前預取、chrome 近了才排。 */
+const MAIN_ROOT_MARGIN = "1200px";
+const CHROME_ROOT_MARGIN = "400px";
+/** §10.2 distanceBucket 桶寬（px）：微滾動不重洗牌。 */
+const DISTANCE_BUCKET_PX = 300;
+/** §10.2 滾動 re-sort throttle（ms）：≈ dispatch cadence（daemon ~3 段/秒、更快是白工）。 */
+const RESORT_THROTTLE_MS = 200;
 
 /**
  * 瀏覽器預設 observer 工廠：包 `IntersectionObserver`。
@@ -596,11 +750,36 @@ function defaultMakeObserver(cb, options) {
 }
 
 /**
- * 對 `pending` segment 掛 IntersectionObserver：進場（rootMargin 提前 600px）→ 立即 unobserve →
- * 進併發閘門 queue → 呼叫 `onEnter(segment)` 觸發取譯（§10、§7 C22）。M1 lazy 取譯時機。
+ * 瀏覽器預設段距視窗量測：block 距視窗邊緣的 px（0 = 相交）。
+ * 只在 priorityGate 的 throttled re-bucket 批次讀呼叫、不進採集/分類路徑（§8 讀寫分離不破）。
+ * 跑道 A（linkedom）由 opts.measure 注入 stub。
+ * @param {Element} block
+ * @returns {number}
+ */
+function defaultMeasure(block) {
+	if (!block || typeof block.getBoundingClientRect !== "function") return 0;
+	const rect = block.getBoundingClientRect();
+	const vh = typeof innerHeight === "number" ? innerHeight : 0;
+	if (rect.bottom < 0) return -rect.bottom;  // 已滾過（視窗上方）
+	if (rect.top > vh) return rect.top - vh;    // 未到（視窗下方）
+	return 0;                                   // 相交
+}
+
+/**
+ * §10 排程：對 `pending` segment 做 tiered dispatch + priorityGate（P3）。
  *
- * B 只做「觀察 + 閘門 + 呼鉤子」、不碰 bridge——`onEnter` 由呼叫端注入（C 接 native bridge、
- * 測試塞 fake）。只 observe `pending` 段（skipped / drafted / 無 block 跳過）；每個 block 只
+ * tiered dispatch（§10.1）——所有觸發餵進同一個 priorityGate：
+ * - main eager：文件序前 `eagerBudget`（預設 EAGER_MAIN_BUDGET=10）個 MAIN 段**載入即發**、不等 IO。
+ * - main lazy：IO rootMargin 1200px（讀前預取）；chrome lazy：IO rootMargin 400px（近了才排）。
+ * - 進場即 unobserve（一次性）；已入列段不重複入列；全段已 eager 的 block 免觀察。
+ *
+ * priorityGate（§10.2）——FIFO → min-first 優先佇列：
+ * - sortKey = (viewportBand, regionRank, distanceBucket@300px, order)，lexicographic、dequeue 最小。
+ * - 滾動 re-sort：scroll → throttle ~200ms trailing → rAF → 只 re-bucket 未 dispatch 段。
+ * - 併發閘門 maxInFlight（預設 6）不變（§10 D3，on-device 硬約束；真閘門是 daemon ~3 段/秒）。
+ *
+ * 只做「排程 + 閘門 + 呼鉤子」、不碰 bridge——`onEnter` 由呼叫端注入（C 接 native bridge、
+ * 測試塞 fake）。只排 `pending` 段（skipped / drafted / 無 block 跳過）；每個 block 只
  * observe 一次（多段共用同一 block 時進場一併入列）。
  *
  * @param {Segment[]} segments
@@ -608,10 +787,15 @@ function defaultMakeObserver(cb, options) {
  *   onEnter: (seg: Segment) => (void | Promise<void>),
  *   maxInFlight?: number,
  *   makeObserver?: (cb: Function, options: object) => { observe: Function, unobserve: Function, disconnect?: Function },
- *   rootMargin?: string,
+ *   measure?: (block: Element) => number,
+ *   eagerBudget?: number,
+ *   rootMargin?: string,        // 覆寫兩層（相容舊單層呼叫）
+ *   mainRootMargin?: string,
+ *   chromeRootMargin?: string,
  *   threshold?: number,
  * }} opts
- * @returns {{ observer: object, disconnect: () => void }} disconnect() 停 observer + 清未 dispatch 的排隊段
+ * @returns {{ observer: object|null, observers: object[], resort: () => void, disconnect: () => void }}
+ *   disconnect() 停 observer + 清未 dispatch 的排隊段；resort() 手動觸發 re-bucket（測試 / throttle 目標）
  */
 function observeSegments(segments, opts) {
 	const onEnter = opts.onEnter;
@@ -620,29 +804,73 @@ function observeSegments(segments, opts) {
 	}
 	const maxInFlight = opts.maxInFlight ?? 6;
 	const makeObserver = opts.makeObserver || defaultMakeObserver;
+	const measure = opts.measure || defaultMeasure;
+	const eagerBudget = opts.eagerBudget ?? EAGER_MAIN_BUDGET;
 
-	// block → 該 block 綁的 pending 段（多段共用同一 block 時進場一併觸發）。
+	// block → 該 block 綁的 pending 段（多段共用同一 block 時進場一併入列）。
 	/** @type {Map<Element, Segment[]>} */
 	const blockToSegs = new Map();
-	/** @type {Element[]} */
-	const blocks = [];
+	/** @type {Segment[]} */
+	const pendings = [];
 	for (const seg of segments) {
-		if (seg.state !== SegmentState.PENDING) continue; // 只觀察待譯段
+		if (seg.state !== SegmentState.PENDING) continue; // 只排待譯段
 		const block = seg.anchor && seg.anchor.block;
 		if (!block) continue;
+		pendings.push(seg);
 		let arr = blockToSegs.get(block);
-		if (!arr) { arr = []; blockToSegs.set(block, arr); blocks.push(block); }
+		if (!arr) { arr = []; blockToSegs.set(block, arr); }
 		arr.push(seg);
 	}
 
-	// 併發閘門：queue + inFlight 計數，最多 maxInFlight 個 onEnter 同時 in-flight（§10 D3，on-device 硬約束）。
+	// ---- priorityGate（§10.2）----------------------------------------------
 	/** @type {Segment[]} */
-	const queue = [];
+	const queued = [];                 // 已觸發、未 dispatch 的段（min-first）
+	const enqueuedSet = new WeakSet(); // 防重複入列（eager 與 IO 觸發可能重疊）
+	/** @type {Map<Segment, number[]>} */
+	const keys = new Map();            // seg → sortKey tuple（re-bucket 時全量 re-key）
+	let dirty = false;                 // 佇列需重排（入列 / re-key 後 lazy sort）
 	let inFlight = 0;
 	let disconnected = false;
+
+	/** sortKey = (viewportBand, regionRank, distanceBucket, order)（§10.2、dequeue 最小）。 */
+	function keyOf(seg) {
+		const d = Number(measure(seg.anchor && seg.anchor.block)) || 0;
+		const band = d <= 0 ? 0 : 1;                                  // 0 = 與視窗相交、壓過一切
+		const rank = seg.region === Region.CHROME ? 1 : 0;            // offscreen 時 region 壓過 distance
+		const bucket = d <= 0 ? 0 : Math.floor(d / DISTANCE_BUCKET_PX);
+		return [band, rank, bucket, seg.order || 0];
+	}
+	function compareSegs(a, b) {
+		const ka = keys.get(a);
+		const kb = keys.get(b);
+		for (let i = 0; i < 4; i++) {
+			if (ka[i] !== kb[i]) return ka[i] - kb[i];
+		}
+		return 0;
+	}
+	function enqueue(seg) {
+		if (enqueuedSet.has(seg)) return;
+		enqueuedSet.add(seg);
+		keys.set(seg, keyOf(seg));
+		queued.push(seg);
+		dirty = true;
+	}
+	function dequeueMin() {
+		if (dirty) {
+			queued.sort(compareSegs); // 集合小（pending 遞縮）、sorted-array 與 heap 等效（§10.2）
+			dirty = false;
+		}
+		return queued.shift();
+	}
+	/** re-bucket：只 re-key 未 dispatch 段（量測批次讀、throttled）。 */
+	function resort() {
+		if (disconnected || queued.length === 0) return;
+		for (const seg of queued) keys.set(seg, keyOf(seg));
+		dirty = true;
+	}
 	function pump() {
-		while (!disconnected && inFlight < maxInFlight && queue.length > 0) {
-			const seg = queue.shift();
+		while (!disconnected && inFlight < maxInFlight && queued.length > 0) {
+			const seg = dequeueMin();
 			inFlight++;
 			// 包進 promise 鏈：吸收 onEnter 的同步 throw / 回傳 Promise，settle 後補位。
 			Promise.resolve().then(() => onEnter(seg)).then(settle, settle);
@@ -653,26 +881,86 @@ function observeSegments(segments, opts) {
 		pump();
 	}
 
-	const observer = makeObserver((entries, obs) => {
+	// ---- 滾動 re-sort throttle（§10.2：scroll → ~200ms trailing → rAF → resort）----
+	/** @type {any} */
+	let resortTimer = null;
+	const raf = typeof requestAnimationFrame === "function"
+		? requestAnimationFrame
+		: /** @param {() => void} fn */ (fn) => { fn(); return 0; };
+	function scheduleResort() {
+		if (disconnected || resortTimer != null) return; // throttle：窗內合併、窗尾（trailing）必觸發
+		resortTimer = setTimeout(() => {
+			resortTimer = null;
+			raf(() => resort());
+		}, RESORT_THROTTLE_MS);
+	}
+	const scrollTarget = typeof window !== "undefined" ? window : null;
+	const onScroll = scrollTarget ? () => scheduleResort() : null;
+	if (scrollTarget && onScroll) scrollTarget.addEventListener("scroll", onScroll, { passive: true });
+
+	// ---- tiered dispatch（§10.1）--------------------------------------------
+	// main eager：文件序前 N 個 MAIN pending 段、載入即發（不等 IO callback）。
+	if (eagerBudget > 0) {
+		const mains = pendings
+			.filter((s) => s.region !== Region.CHROME) // region 缺省折進 MAIN（§6.5 非對稱預設）
+			.sort((a, b) => (a.order || 0) - (b.order || 0));
+		const n = Math.min(eagerBudget, mains.length);
+		for (let i = 0; i < n; i++) enqueue(mains[i]);
+	}
+
+	// lazy：兩層 IO（main / chrome 各一、rootMargin 不同），全段已 eager 的 block 免觀察。
+	const threshold = opts.threshold ?? 0.1;
+	const tierMargins = {
+		main: opts.rootMargin || opts.mainRootMargin || MAIN_ROOT_MARGIN,
+		chrome: opts.rootMargin || opts.chromeRootMargin || CHROME_ROOT_MARGIN,
+	};
+	/** @type {{ main: Element[], chrome: Element[] }} */
+	const tierBlocks = { main: [], chrome: [] };
+	for (const [block, segs] of blockToSegs) {
+		if (segs.every((s) => enqueuedSet.has(s))) continue; // 全 eager → 免觀察
+		tierBlocks[segs[0].region === Region.CHROME ? "chrome" : "main"].push(block);
+	}
+	const ioCallback = (entries, obs) => {
 		if (disconnected) return;
+		let added = false;
 		for (const entry of entries) {
 			if (!entry.isIntersecting) continue;
 			obs.unobserve(entry.target); // 進場即 unobserve：一次性、不重複觸發
 			const segs = blockToSegs.get(entry.target);
 			if (!segs) continue;
-			for (const seg of segs) queue.push(seg);
-			pump();
+			for (const seg of segs) {
+				if (enqueuedSet.has(seg)) continue;
+				enqueue(seg);
+				added = true;
+			}
 		}
-	}, { root: null, rootMargin: opts.rootMargin || "600px", threshold: opts.threshold ?? 0.1 });
+		if (added) pump();
+	};
+	/** @type {object[]} */
+	const observers = [];
+	for (const tier of /** @type {const} */ (["main", "chrome"])) {
+		if (!tierBlocks[tier].length) continue;
+		const obs = makeObserver(ioCallback, { root: null, rootMargin: tierMargins[tier], threshold });
+		observers.push(obs);
+		for (const block of tierBlocks[tier]) obs.observe(block);
+	}
 
-	for (const block of blocks) observer.observe(block);
+	pump(); // eager 段即刻 dispatch（載入即發）
+
 	return {
-		observer,
+		observer: observers[0] || null,
+		observers,
+		resort, // 手動 re-bucket（測試用；throttle 路徑的目標函式）
 		// disconnect：停 observer + 清空尚未 dispatch 的排隊段（已 in-flight 的 onEnter 無法取消）。
 		disconnect() {
 			disconnected = true;
-			queue.length = 0;
-			if (typeof observer.disconnect === "function") observer.disconnect();
+			queued.length = 0;
+			keys.clear();
+			if (resortTimer != null) { clearTimeout(resortTimer); resortTimer = null; }
+			if (scrollTarget && onScroll) scrollTarget.removeEventListener("scroll", onScroll);
+			for (const obs of observers) {
+				if (typeof obs.disconnect === "function") obs.disconnect();
+			}
 		},
 	};
 }
@@ -752,8 +1040,9 @@ if (typeof document !== "undefined" && typeof browser !== "undefined") {
 
 const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
+	Region, EAGER_MAIN_BUDGET,
 	isInlineDisplay, hasText, worthTranslating, isFilenameOnly,
-	makeContext, classifyNode, isShallowBlock,
+	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,
 };

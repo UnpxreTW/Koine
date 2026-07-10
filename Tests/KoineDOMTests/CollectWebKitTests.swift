@@ -133,9 +133,15 @@ private enum Source {
 		.deletingLastPathComponent() // Tests
 		.deletingLastPathComponent() // <repo>
 
-	/// 讀注入 WKWebView 的採集層腳本 content.js。
+	/// 讀注入 WKWebView 的採集層腳本 content.js，補 `;0` 固定完成值。
+	///
+	/// content.js 的程式完成值是尾巴 `globalThis.__koine__ = __koineExports` 賦值出來的
+	/// exports 物件（成員全是 function、不可序列化）：macOS 26 的 WebKit 對此讓 async
+	/// `evaluateJavaScript` 丟 WKError 5（`javaScriptResultTypeIsUnsupported`），macOS 27
+	/// 則丟掉 function 成員回空物件。補一個可序列化的完成值（`0`）讓注入跨版本穩定。
 	static func contentJS() throws -> String {
 		try String(contentsOf: repoRoot.appending(path: "Sources/Extension/Resources/content.js"), encoding: .utf8)
+			+ "\n;0"
 	}
 
 	/// 讀指定 fixture 的 HTML。

@@ -130,5 +130,5 @@ let project = Project(
 			buildAction: .buildAction(targets: ["KoineApp"]),
 			runAction: .runAction(executable: "KoineApp")
 		),
-	],
+	]
 )

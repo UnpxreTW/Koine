@@ -27,3 +27,6 @@ node_modules/
 .playwright/
 playwright-report/
 test-results/
+
+# Characterization golden mismatch 產物（golden 檔本身進 git，只排除 .actual）
+**/__Golden__/**/*.actual.*

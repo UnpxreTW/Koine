@@ -1,5 +1,5 @@
 {
-  "originHash" : "a66073d0bbd26934bddd0a8da8b2de181a28856ed6939f8e25e5bd09097fa5d4",
+  "originHash" : "8b99497bc12627714809ad4a06073f36fc8463ef83f5c906668f7ab148ad6e43",
   "pins" : [
     {
       "identity" : "swift-argument-parser",
@@ -8,6 +8,14 @@
       "state" : {
         "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
         "version" : "1.8.2"
+      }
+    },
+    {
+      "identity" : "swiftcharacterizationkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/UnpxreTW/SwiftCharacterizationKit",
+      "state" : {
+        "revision" : "f4adc42bad5e7de9cb129346d1b2d29991ad3af5"
       }
     },
     {

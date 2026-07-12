@@ -66,23 +66,14 @@ struct KoineCLI: AsyncParsableCommand {
 	}
 
 	/// 位置參數優先；否則讀 stdin（管線 / 重導向）。空輸入回空字串、由呼叫端報錯。
+	/// 委派 `InputResolver`：production 行為零改動，耦合點改成可注入參數（見該檔）。
 	private func resolveInput() throws -> String {
-		if let text {
-			return text.trimmingCharacters(in: .whitespacesAndNewlines)
-		}
-		// 互動 TTY 且無位置參數：不會有管線輸入，直接報錯——
-		// 否則 readDataToEndOfFile() 會無提示阻塞到 Ctrl-D、看起來像當機。
-		guard isatty(FileHandle.standardInput.fileDescriptor) == 0 else {
-			throw ValidationError("沒有輸入文字。提供位置參數或從 stdin 餵入。")
-		}
-		let data = FileHandle.standardInput.readDataToEndOfFile()
-		guard !data.isEmpty else {
-			return ""
-		}
-		// 區分「沒給輸入」與「給了但解不開」：非 UTF-8 不可吞成空字串誤報為無輸入。
-		guard let input = String(bytes: data, encoding: .utf8) else {
-			throw RuntimeError("輸入不是有效的 UTF-8 文字。")
-		}
-		return input.trimmingCharacters(in: .whitespacesAndNewlines)
+		try InputResolver.resolve(
+			positionalText: text,
+			environment: .init(
+				isInteractiveTerminal: { isatty(FileHandle.standardInput.fileDescriptor) != 0 },
+				readStandardInput: { FileHandle.standardInput.readDataToEndOfFile() }
+			)
+		)
 	}
 }

@@ -1,0 +1,26 @@
+[
+  {
+    "outcome" : "success: Hello, world",
+    "scenario" : "positional text"
+  },
+  {
+    "outcome" : "success: Hello",
+    "scenario" : "positional text with surrounding whitespace"
+  },
+  {
+    "outcome" : "success: Bonjour",
+    "scenario" : "non-interactive stdin valid UTF-8"
+  },
+  {
+    "outcome" : "success: ",
+    "scenario" : "non-interactive stdin empty data"
+  },
+  {
+    "outcome" : "failure: 輸入不是有效的 UTF-8 文字。",
+    "scenario" : "non-interactive stdin invalid UTF-8"
+  },
+  {
+    "outcome" : "failure: 沒有輸入文字。提供位置參數或從 stdin 餵入。",
+    "scenario" : "interactive terminal without positional text"
+  }
+]

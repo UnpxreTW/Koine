@@ -16,6 +16,10 @@ let project = Project(
 			url: "https://github.com/apple/swift-argument-parser",
 			requirement: .upToNextMajor(from: "1.5.0")
 		),
+		.remote(
+			url: "https://github.com/UnpxreTW/SwiftCharacterizationKit",
+			requirement: .revision("f4adc42bad5e7de9cb129346d1b2d29991ad3af5")
+		),
 	],
 	targets: [
 		// Host App：Safari Web Extension 的容器殼（引導啟用、提示語言包），翻譯本體在 Extension。
@@ -103,9 +107,18 @@ let project = Project(
 			product: .unitTests,
 			bundleId: "me.unpxre.koine.domtests",
 			deploymentTargets: .macOS("26.0"),
-			sources: ["Tests/KoineDOMTests/**/*.swift"],
+			// KoineCLI 是 .commandLineTool（可執行檔），無法以 target dependency 連結進測試 bundle
+			// （連結器找不到符號）——InputResolver／RuntimeError 直接把原始檔納入本 target 編譯，
+			// 與 KoineCLI 各自獨立編譯一份，非共用二進位。
+			sources: [
+				"Tests/KoineDOMTests/**/*.swift",
+				"Sources/CLI/InputResolver.swift",
+				"Sources/CLI/RuntimeError.swift",
+			],
 			dependencies: [
 				.target(name: "Koine"),
+				.package(product: "ArgumentParser"),
+				.package(product: "CharacterizationSupport"),
 				.package(product: "SwiftStyleLint", type: .plugin),
 			]
 		),

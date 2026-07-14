@@ -160,6 +160,24 @@ function isFilenameOnly(t) {
 	return KNOWN_EXT.has(t.slice(dot + 1).toLowerCase());
 }
 
+/**
+ * §4.9 pageLangIsZh 偵測（P2）：main() 一次呼叫、餵給 makeContext，供 R9 already-target gate 用。
+ * 純函式：優先讀 documentElement 的 lang（zh-Hant/zh-TW/zh-HK/裸 zh → true；zh-CN/zh-Hans → false，
+ * 簡中頁仍需譯成目標 zh-Hant；明確非 zh 語碼 → false）；缺 lang 屬性才退回取樣文字 heuristic
+ * （純漢字、無假名/諺文 → 視為中文頁，同 R9 逐段判斷邏輯）。
+ * @param {string | null | undefined} htmlLang document.documentElement 的 lang 屬性
+ * @param {string} [sample] 缺 lang 屬性時的取樣文字（如 document.body.textContent 片段；呼叫端截斷）
+ * @returns {boolean}
+ */
+function detectPageLangIsZh(htmlLang, sample = "") {
+	const lang = htmlLang?.toLowerCase().trim();
+	if (lang) {
+		if (lang === "zh-cn" || lang.startsWith("zh-hans")) return false;
+		return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw") || lang.startsWith("zh-hk");
+	}
+	return RE_HAS_HAN.test(sample) && !RE_HAS_KANA.test(sample) && !RE_HAS_HANGUL.test(sample);
+}
+
 // ============================================================================
 // ctx：採集情境（getStyle 注入、targetLang、站台覆寫、display 快取）
 // ============================================================================
@@ -1020,10 +1038,13 @@ function buildBridgeMessage(req) {
 
 function main() {
 	console.log("[雅言] content script loaded");
-	const ctx = makeContext();
+	const htmlLang = document.documentElement.getAttribute("lang");
+	// 無 lang 屬性才取樣（避免無謂 textContent 讀取）；純讀不觸發 reflow。
+	const sample = htmlLang ? "" : (document.body?.textContent || "").slice(0, 500);
+	const ctx = makeContext({ pageLangIsZh: detectPageLangIsZh(htmlLang, sample) });
 	const segments = collectSegments(document.body, ctx, { walkId: 1 });
 	if (!segments.length) return;
-	const from = document.documentElement.getAttribute("lang") || undefined;
+	const from = htmlLang || undefined;
 	const send = (req) => browser.runtime.sendMessage(buildBridgeMessage(req));
 	observeSegments(segments, {
 		onEnter: (seg) => translateSegment(seg, send, { from, to: ctx.targetLang }),
@@ -1041,7 +1062,7 @@ if (typeof document !== "undefined" && typeof browser !== "undefined") {
 const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
 	Region, EAGER_MAIN_BUDGET,
-	isInlineDisplay, hasText, worthTranslating, isFilenameOnly,
+	isInlineDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,

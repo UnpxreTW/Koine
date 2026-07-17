@@ -321,12 +321,21 @@ function respectsTranslateNo(el) {
 	return !BULK_TRANSLATE_NO_TAGS.has(el.tagName);
 }
 
-/** §3.6 lang 自身為目標語（只看自身、不繼承祖先）。 */
-function isAlreadyTargetLang(el) {
+/** §3.6 lang 自身為目標語（只看自身、不繼承祖先）。依傳入 targetLang 判斷，非硬編 zh。 */
+function isAlreadyTargetLang(el, targetLang) {
 	const lang = el.getAttribute("lang")?.toLowerCase().trim();
-	if (!lang) return false;
-	if (lang === "zh-cn" || lang.startsWith("zh-hans")) return false; // 簡中不跳（待 Apple 支援度實測）
-	return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw");
+	if (!lang || !targetLang) return false;
+	const target = targetLang.toLowerCase().trim();
+	// zh 目標：script 變體需嚴格區分，簡中（zh-CN/zh-Hans）不視為已達繁中目標（待 Apple 支援度實測）。
+	if (target === "zh" || target.startsWith("zh-hant") || target.startsWith("zh-tw")) {
+		if (lang === "zh-cn" || lang.startsWith("zh-hans")) return false;
+		return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw");
+	}
+	if (target === "zh-cn" || target.startsWith("zh-hans")) {
+		return lang === "zh-cn" || lang.startsWith("zh-hans");
+	}
+	// 非 zh 目標：比對 BCP-47 primary language subtag（忽略地區／script 子標籤）。
+	return lang.split("-")[0] === target.split("-")[0];
 }
 
 // ============================================================================
@@ -1063,6 +1072,7 @@ const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
 	Region, EAGER_MAIN_BUDGET,
 	isInlineDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
+	isAlreadyTargetLang,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,

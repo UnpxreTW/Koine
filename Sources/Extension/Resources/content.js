@@ -3,8 +3,8 @@
 //
 // 雅言 Koine — M1 DOM 採集層（content script，注入每個頁面）。
 //
-// 設計來源：SPEC-collect-layer(採集核心＝兩遍 walk + inline buffer flush、
-// 採集產物＝Segment IR、block/inline 判斷＝computed display + FORCE_BLOCK 白名單)。
+// 設計來源：SPEC-collect-layer（採集核心＝兩遍 walk + inline buffer flush、
+// 採集產物＝Segment IR、block/inline 判斷＝computed display + FORCE_BLOCK 白名單）。
 //
 // 通用腳本（universal script）：
 //   - Safari 載入為 classic content script（無 import/export 語法）。

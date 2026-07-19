@@ -40,8 +40,9 @@ private final class ConstructionCounter: @unchecked Sendable {
 // MARK: - TranslationSessionPoolTests
 
 /// `TranslationSessionPool` 複用邏輯跑道：注入計數 factory 觀測建構次數。
-/// 多數測試只建構 session、不碰真 `translationd`；唯 `errorInvalidatesCachedSession`
-/// 例外——靠真 `translationd` 對未安裝語言對快速拋錯來驗失效重建路徑。
+/// 多數測試只建構 session、不碰真 `translationd`；唯 `error invalidates cached session`
+/// 與 `translate failure invalidates installed cache` 兩者例外——皆靠真 `translationd`
+/// 對未安裝語言對快速拋錯來驗失效重建路徑。
 private final class TranslationSessionPoolTests {
 
 	/// 同語言對重複取用：只建構一次（複用命中）。
@@ -112,5 +113,57 @@ private final class TranslationSessionPoolTests {
 		await pool.ensureSession(from: english, to: hant)
 		await pool.ensureSession(from: hant, to: english)
 		#expect(counter.count == 2, "方向相反屬不同語言對")
+	}
+
+	/// 未標記過的語言對不視為已知已裝妥（`AppleTranslationEngine.status` 首次查詢應真查）。
+	@Test
+	private func `unknown pair is not known installed`() async {
+		let pool = TranslationSessionPool()
+		let english = Locale.Language(identifier: "en")
+		let hant = Locale.Language(identifier: "zh-Hant")
+		let isKnown = await pool.isKnownInstalled(from: english, to: hant)
+		#expect(isKnown == false)
+	}
+
+	/// 標記後同語言對回報已知已裝妥（供 `status` 跳過重查）。
+	@Test
+	private func `marked pair is known installed`() async {
+		let pool = TranslationSessionPool()
+		let english = Locale.Language(identifier: "en")
+		let hant = Locale.Language(identifier: "zh-Hant")
+		await pool.markInstalled(from: english, to: hant)
+		let isKnown = await pool.isKnownInstalled(from: english, to: hant)
+		#expect(isKnown == true)
+	}
+
+	/// 已知已裝妥快取以語言對為 key、彼此不污染。
+	@Test
+	private func `installed cache is scoped per pair`() async {
+		let pool = TranslationSessionPool()
+		let english = Locale.Language(identifier: "en")
+		let hant = Locale.Language(identifier: "zh-Hant")
+		let japanese = Locale.Language(identifier: "ja")
+		await pool.markInstalled(from: english, to: hant)
+		let otherKnown = await pool.isKnownInstalled(from: english, to: japanese)
+		#expect(otherKnown == false, "標記 en→zh-Hant 不應影響 en→ja")
+	}
+
+	/// translate 失敗時一併清掉已知已裝妥快取，強迫下次 `status` 查詢重新真查
+	/// （語言包狀態可能已變，同 session 快取的失效原則）。
+	@Test
+	private func `translate failure invalidates installed cache`() async {
+		let pool = TranslationSessionPool { source, target in
+			TranslationSession(installedSource: source, target: target)
+		}
+		let bogusSource = Locale.Language(identifier: "xx")
+		let bogusTarget = Locale.Language(identifier: "yy")
+		await pool.markInstalled(from: bogusSource, to: bogusTarget)
+		let markedKnown = await pool.isKnownInstalled(from: bogusSource, to: bogusTarget)
+		#expect(markedKnown == true, "標記後應回報已知已裝妥")
+		await #expect(throws: (any Error).self, "未安裝語言對應拋錯") {
+			try await pool.translate("hi", from: bogusSource, to: bogusTarget)
+		}
+		let stillKnown = await pool.isKnownInstalled(from: bogusSource, to: bogusTarget)
+		#expect(stillKnown == false, "出錯後應清掉已知已裝妥快取、強迫下次重查")
 	}
 }

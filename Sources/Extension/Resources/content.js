@@ -3,8 +3,8 @@
 //
 // 雅言 Koine — M1 DOM 採集層（content script，注入每個頁面）。
 //
-// 設計來源：SPEC-collect-layer（採集核心＝兩遍 walk + inline buffer flush、
-// 採集產物＝Segment IR、block/inline 判斷＝computed display + FORCE_BLOCK 白名單）。
+// 設計來源：SPEC-collect-layer(採集核心＝兩遍 walk + inline buffer flush、
+// 採集產物＝Segment IR、block/inline 判斷＝computed display + FORCE_BLOCK 白名單)。
 //
 // 通用腳本（universal script）：
 //   - Safari 載入為 classic content script（無 import/export 語法）。
@@ -55,6 +55,42 @@ const NODE_ELEMENT = 1;
 const NODE_TEXT = 3;
 const NODE_PI = 7;
 const NODE_COMMENT = 8;
+
+// ============================================================================
+// §P4 button-class 窄判準（KO-5）：BUTTON／LABEL／role=button，
+// 另需在採集期核「≤20 字」與「無 block 子」（見 collectSegments 的 isButtonClassCandidate）。
+// ============================================================================
+
+/** button-class 段的譯文換字上限字數（超過退回一般 block／wrapper 流程）。 */
+const BUTTON_CLASS_MAX_CHARS = 20;
+
+/** @param {Element} el */
+function hasButtonRole(el) {
+	const role = typeof el.getAttribute === "function" ? el.getAttribute("role") : null;
+	return !!role && role.toLowerCase().trim() === "button";
+}
+
+/** 元素自身是否符合 button-class 標籤／role 判準（不含長度與 block 子檢查）。 @param {Element} el */
+function isButtonClassElement(el) {
+	if (!el || el.nodeType !== NODE_ELEMENT) return false;
+	return el.tagName === "BUTTON" || el.tagName === "LABEL" || hasButtonRole(el);
+}
+
+/**
+ * 是否只有純文字子代（無任何元素子節點，含 SKIP_SUBTREE 如 svg/img、OPAQUE_INLINE 如 code/time、
+ * 一般 inline 元素如 span/strong）。原地換字用 `el.textContent = 譯文` 整個覆寫、會連帶砍掉所有
+ * 元素子節點——icon（svg/img）等非文字資源一旦被砍就回不來，且這類節點常是 SKIP_SUBTREE，完全不會
+ * 反映在 source／長度判準裡（採集時就已被過濾、對判準不可見）。保守起步：只要有任何元素子節點就不
+ * 命中 button-class，退回一般 block／wrapper 流程（wrapper 只加 sibling、不動原元素、天生安全）。
+ * @param {Element} el
+ */
+function hasOnlyTextChildren(el) {
+	if (!el || typeof el.childNodes === "undefined") return false;
+	for (const child of el.childNodes) {
+		if (child.nodeType !== NODE_TEXT) return false;
+	}
+	return true;
+}
 
 // ============================================================================
 // §2.1 block/inline 判斷收斂核心
@@ -250,8 +286,10 @@ function classifyNode(node, ctx) {
 	const el = /** @type {Element} */ (node);
 	const tag = el.tagName;
 
-	// [1] 自家標記（二次 walk 高命中、最便宜）
-	if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) {
+	// [1] 自家標記（二次 walk 高命中、最便宜）；data-koine-translated 是 §P4 button-class 原地換字
+	// 的防自吞標記——標記消失（框架重渲染換掉節點、或標記被清）即不再命中此檢查、自動視為未譯重新採集。
+	if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")
+		|| el.hasAttribute("data-koine-translated")) {
 		return { disp: "SKIP_SUBTREE", cs: null };
 	}
 
@@ -464,7 +502,9 @@ const SegmentState = Object.freeze({
  * @property {string} source
  * @property {object} anchor
  * @property {string} state
- * @property {{ protectedSpans?: ProtectedSpan[], skipReason?: string, charCount?: number }} [meta]
+ * @property {'block'|'button'} [kind]   // §P4：button-class 窄判準命中時 = "button"（原地換字、無 wrapper）
+ * @property {{ protectedSpans?: ProtectedSpan[], skipReason?: string, charCount?: number, buttonSnapshot?: string }} [meta]
+ *   buttonSnapshot：§P4 button-class 段專用，採集當下未過濾的原始 textContent（供插回時字面防呆比對）
  */
 
 // ============================================================================
@@ -481,6 +521,8 @@ function* childNodes(node) {
  * @property {NodeDisposition} disp
  * @property {StyleInfo|null} cs
  * @property {boolean} isBlock         // shallow block ∨ 含 block 子（forceBlock 上傳）
+ * @property {boolean} hasBlockDescendant // §P4：isBlock 拆解出的純子代旗標（不含自身 shallowBlock），
+ *                                         // 供 button-class 窄判準「無 block 子」核對（KO-5）
  * @property {RegionValue|null} region     // §6.5 最近 landmark 祖先（含自身）；無 landmark 為 null
  * @property {RegionValue|null} regionHint // §6.5 最近 class/id hint（含自身）；無訊號為 null
  */
@@ -516,16 +558,16 @@ function walkAndLabel(root, ctx) {
 	function visit(node, landmark, hint) {
 		const { disp, cs } = classifyNode(node, ctx);
 		if (disp === "SKIP_SUBTREE") {
-			labels.set(node, { disp, cs, isBlock: false, region: landmark, regionHint: hint });
+			labels.set(node, { disp, cs, isBlock: false, hasBlockDescendant: false, region: landmark, regionHint: hint });
 			return false;
 		}
 		if (disp === "OPAQUE_INLINE") {
-			labels.set(node, { disp, cs, isBlock: false, region: landmark, regionHint: hint });
+			labels.set(node, { disp, cs, isBlock: false, hasBlockDescendant: false, region: landmark, regionHint: hint });
 			return false; // 不展開、不可分割、視為 inline
 		}
 		// WALK
 		if (node.nodeType === NODE_TEXT) {
-			labels.set(node, { disp, cs, isBlock: false, region: landmark, regionHint: hint });
+			labels.set(node, { disp, cs, isBlock: false, hasBlockDescendant: false, region: landmark, regionHint: hint });
 			return false;
 		}
 
@@ -546,7 +588,7 @@ function walkAndLabel(root, ctx) {
 		const shallowBlock = isShallowBlock(el, cs);
 		// forceBlock 上傳：自身 block，或含 block 子（混排）→ 走 block flush 分支。
 		const isBlock = shallowBlock || hasBlockChild;
-		labels.set(node, { disp, cs, isBlock, region, regionHint: nearHint });
+		labels.set(node, { disp, cs, isBlock, hasBlockDescendant: hasBlockChild, region, regionHint: nearHint });
 		return isBlock;
 	}
 
@@ -557,6 +599,9 @@ function walkAndLabel(root, ctx) {
 /** §2.2 shallow block 判斷（白名單先、computed 後）。 */
 function isShallowBlock(el, cs) {
 	if (FORCE_BLOCK_TAGS.has(el.tagName)) return true;
+	// §P4 KO-5：role=button 強制視為 block flush 邊界（不受 computed display 影響），
+	// 讓 <span role="button">…</span> 這類非天生 block 標籤也能取得自身 anchor。
+	if (hasButtonRole(el)) return true;
 	const d = cs ? cs.display : "";
 	if (d === "none" || d === "") return false;
 	return !isInlineDisplay(d);
@@ -583,7 +628,8 @@ function collectSegments(root, ctx, opts = {}) {
 		const { disp, cs } = classifyNode(node, c);
 		const isBlock = node.nodeType === NODE_ELEMENT && disp === "WALK"
 			&& isShallowBlock(/** @type {Element} */ (node), cs);
-		return { disp, cs, isBlock, region: null, regionHint: null };
+		// 未知子代資訊時保守視為「有 block 子」，防禦路徑不誤判為 button-class（§P4）。
+		return { disp, cs, isBlock, hasBlockDescendant: true, region: null, regionHint: null };
 	}
 	/**
 	 * §6.5 段 region：landmark 由第一遍 walk stack 增量取得；無 landmark 時 flush 點三訊號評分。
@@ -597,6 +643,23 @@ function collectSegments(root, ctx, opts = {}) {
 		if (label && label.region) return label.region;
 		if (label) return heuristicRegion(el, label.regionHint);
 		return classifyRegion(el); // 不在 labels（防禦路徑）→ 完整 walk-up cascade
+	}
+
+	/**
+	 * §P4 KO-5 完整判準：標籤／role 命中 + 無 block 子（含自身、含各深度子代）+ 段落原文 ≤20 字 +
+	 * 只有純文字子代（防原地換字用 textContent 整個覆寫時，連帶砍掉 icon 等非文字元素子節點）。
+	 * @param {Node} blockNode
+	 * @param {string} source  已 normalize 的段落原文（此段的翻譯來源文字）
+	 * @returns {boolean}
+	 */
+	function isButtonClassCandidate(blockNode, source) {
+		if (!blockNode || blockNode.nodeType !== NODE_ELEMENT) return false;
+		if (!isButtonClassElement(/** @type {Element} */ (blockNode))) return false;
+		if (source.length > BUTTON_CLASS_MAX_CHARS) return false;
+		if (!hasOnlyTextChildren(/** @type {Element} */ (blockNode))) return false;
+		const label = labels.get(blockNode);
+		const hasBlockDescendant = label ? label.hasBlockDescendant : true; // 未知時保守判有
+		return !hasBlockDescendant;
 	}
 
 	function collect(node) {
@@ -642,7 +705,17 @@ function collectSegments(root, ctx, opts = {}) {
 		const seg = {
 			id, order, region, source, anchor: makeAnchor(buf, blockNode), state: SegmentState.PENDING,
 		};
-		if (spans.length) seg.meta = { protectedSpans: spans, charCount: source.length };
+		// §P4：button-class 窄判準命中 → 標記 kind，供 insertTranslations 走原地換字（KO-5/6/7）。
+		// buttonSnapshot 存採集當下「未過濾」的原始 textContent（非 source——source 已被 extractText
+		// 過濾掉 SKIP_SUBTREE 子代／ruby 注音等）：插回時只需拿它與插回當下的 textContent 做同一
+		// property 兩次讀值的字面比對，不必重放 collect() 的過濾規則、不會有兩套還原邏輯彼此漂移的風險。
+		const buttonClass = isButtonClassCandidate(blockNode, source);
+		if (buttonClass) seg.kind = "button";
+		if (spans.length || buttonClass) {
+			seg.meta = {};
+			if (spans.length) { seg.meta.protectedSpans = spans; seg.meta.charCount = source.length; }
+			if (buttonClass) seg.meta.buttonSnapshot = blockNode.textContent || "";
+		}
 		segments.push(seg);
 		order++;
 	}
@@ -725,9 +798,13 @@ function normalizeSource(text) {
  * 先擋自家標記、整棵跳過，故插回不會被自己重採（§7.1 (c) 自吞防護）。
  * 只新增 sibling、不動原文節點（§7.1 (b)）。
  *
+ * §P4 例外：`seg.kind === "button"`（button-class 窄判準命中）改走原地換字——不建 wrapper，
+ * 直接覆寫 `block.textContent`，原文存 `title` 與 `data-koine-original`，並以
+ * `data-koine-translated` 當防自吞標記（該標記消失即視為未譯、下次採集會重新產生待譯段）。
+ *
  * @param {Segment[]} segments
- * @param {{ tag?: string }} [opts]   tag 預設 `div`（M1 固定 block；tag-mirror 留後續）
- * @returns {Element[]} 已插入的 wrapper 元素（依插入序）
+ * @param {{ tag?: string }} [opts]   tag 預設 `div`（M1 固定 block；tag-mirror 留後續；button-class 不適用）
+ * @returns {Element[]} 已插入的 wrapper 或原地換字的元素（依處理序）
  */
 function insertTranslations(segments, opts = {}) {
 	const tag = opts.tag || "div";
@@ -738,7 +815,35 @@ function insertTranslations(segments, opts = {}) {
 		const text = seg.refined ?? seg.draft;            // §9.1 並列取值 refined ?? draft
 		if (text == null || text === "") continue;        // 無譯文 / 譯文=空 不插
 		const block = seg.anchor && seg.anchor.block;
-		if (!block || typeof block.after !== "function") continue;
+		if (!block) continue;
+
+		// §P4 KO-5/6/7：button-class 段原地換字，不加 wrapper。
+		if (seg.kind === "button") {
+			if (typeof block.setAttribute !== "function") continue;
+			// 防呆：採集與插回之間是非同步的（IntersectionObserver lazy 進場 + bridge 往返），
+			// 若元素在這段期間被頁面自身 JS 改動（如登入/登出切換文字），代表譯文已對不上目前狀態——
+			// 放棄本次覆寫，保留元素目前的真實內容，不標記 data-koine-translated，下次採集會依
+			// 當下內容重新產生待譯段。
+			//
+			// 比對法：拿「插回當下」的 textContent 對比「採集當下」存的 buttonSnapshot——兩次讀同一個
+			// property，不重放 collect() 的過濾/擷取規則（曾踩：改用 extractText 版還原比對，
+			// 仍會漏掉 aria-hidden / sr-only / SVG <title> 等 SKIP_SUBTREE 子代文字，導致這些完全
+			// 未變動的按鈕被誤判 drift 而永遠翻不了）。缺快照（防禦路徑）一律視為不可信、放棄覆寫。
+			const snapshot = seg.meta && typeof seg.meta.buttonSnapshot === "string" ? seg.meta.buttonSnapshot : null;
+			if (snapshot === null || block.textContent !== snapshot) continue;
+			// textContent 字串相等不保證結構沒變：插入一個不含文字的元素子代（如 icon svg）不會讓
+			// textContent 出現差異，但仍會被緊接著的 textContent 覆寫整個砍掉。插回前必須用採集時
+			// 同一套「只有純文字子代」判準重新核一次目前的即時結構，結構已變同樣視為 drift、放棄覆寫。
+			if (!hasOnlyTextChildren(/** @type {Element} */ (block))) continue;
+			block.setAttribute("data-koine-original", snapshot); // KO-7 原文存 data 屬性
+			block.setAttribute("title", snapshot);                 // KO-6 原文存 title tooltip
+			block.textContent = text;                               // KO-6 直接換
+			block.setAttribute("data-koine-translated", "");        // KO-7 防自吞標記（消失即視為未譯）
+			inserted.push(block);
+			continue;
+		}
+
+		if (typeof block.after !== "function") continue;
 		const doc = block.ownerDocument;
 		if (!doc) continue;
 		const wrapper = doc.createElement(tag);
@@ -1070,9 +1175,9 @@ if (typeof document !== "undefined" && typeof browser !== "undefined") {
 
 const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
-	Region, EAGER_MAIN_BUDGET,
+	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS,
 	isInlineDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
-	isAlreadyTargetLang,
+	isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,

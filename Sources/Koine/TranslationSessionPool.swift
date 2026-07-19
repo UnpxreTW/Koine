@@ -17,6 +17,10 @@ import Translation
 /// `translationd` 內部本就序列化（實測多路併發無吞吐增益）。
 /// 譯出錯即丟棄該語言對的快取 session：語言包狀態可能已變（如剛下載完成），下次呼叫重建。
 ///
+/// 另附帶一個輕量「已知已裝妥」快取（`installedPairs`），供 `AppleTranslationEngine.status`
+/// 跳過重複的 `LanguageAvailability` 查詢——只快取正向結果，`translate` 失敗時一併失效，
+/// 避免使用者事後才下載語言包卻仍被過期快取擋下。
+///
 /// 已知限制：單件 translate 若永不返回（translationd 走 XPC、中斷通常以 error 收場，機率低），
 /// 該語言對門閂將永久持有、後續請求隊頭阻塞——若觀測到 appex 卡死優先懷疑此處
 /// （解法＝對 translate 包 timeout、超時視同 session 失效走既有丟棄路徑）。
@@ -44,6 +48,14 @@ public actor TranslationSessionPool {
 	/// 門閂等候佇列（FIFO、per 語言對）。
 	private var waiters: [PairKey: [CheckedContinuation<Void, Never>]] = [:]
 
+	/// 語言對「已知已裝妥」快取。只記正向結果——`.supported` / `.unsupported` 不快取，
+	/// 因為兩者之後都可能轉為已裝妥（使用者去系統設定下載語言包），沒有天然的失效訊號可跟隨。
+	/// 反向（使用者事後移除已裝語言包）靠 `translate` 失敗時失效，見下方 `translate` 的 catch；
+	/// 該失效發生前、同語言對已通過 `isKnownInstalled` 檢查的並發請求仍會照常送去 `translate`，
+	/// 差別只是失敗時收到的是原始 framework 錯誤而非 `LanguagePairStatus.actionableMessage`
+	/// 的可行動提示——下一次 `status` 查詢即會重新真查、非永久錯誤狀態。
+	private var installedPairs: Set<PairKey> = []
+
 	/// session 建構器（測試注入以觀測建構次數；預設走 macOS 26 standalone init）。
 	private let factory: @Sendable (Locale.Language, Locale.Language) -> TranslationSession
 
@@ -62,6 +74,16 @@ public actor TranslationSessionPool {
 		_ = session(for: PairKey(source: source, target: target))
 	}
 
+	/// 該語言對是否已知已裝妥（跳過 `LanguageAvailability` 重查的依據）。
+	public func isKnownInstalled(from source: Locale.Language, to target: Locale.Language) -> Bool {
+		installedPairs.contains(PairKey(source: source, target: target))
+	}
+
+	/// 記下該語言對已確認就緒；下次 `status` 查詢可直接回 `.installed`、不再真查。
+	public func markInstalled(from source: Locale.Language, to target: Locale.Language) {
+		installedPairs.insert(PairKey(source: source, target: target))
+	}
+
 	/// 以複用 session 翻譯一句；失敗時先丟棄該語言對快取（語言包狀態可能已變）再拋出。
 	/// 同語言對序列化執行（先取門閂再取 session：前一件失效重建後、下一件拿到的是新 session）。
 	public func translate(
@@ -78,6 +100,7 @@ public actor TranslationSessionPool {
 			return translated
 		} catch {
 			sessions[key] = nil
+			installedPairs.remove(key)
 			release(key)
 			throw error
 		}

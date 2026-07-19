@@ -24,16 +24,28 @@ public struct AppleTranslationEngine: TranslationEngine {
 
 	/// 預查語言組合可用性（standalone init 並非 throws、錯誤會延後到 `translate` 才爆，
 	/// 預查讓呼叫端能 fail fast 並給出準確指引）。
+	///
+	/// 每段翻譯前都會呼叫本方法；同頁 from/to 固定時逐段重查 `LanguageAvailability` 是冗餘的
+	/// 跨程序往返，故先問 `TranslationSessionPool` 該語言對是否已知已裝妥、命中就跳過真查。
+	/// 只快取正向結果——`.supported` / `.unsupported` 不快取，見 `TranslationSessionPool` 上的說明。
 	public func status(
 		from source: Locale.Language,
 		to target: Locale.Language
 	) async -> LanguagePairStatus {
-		switch await LanguageAvailability().status(from: source, to: target) {
-		case .installed: .installed
-		case .supported: .supported
-		case .unsupported: .unsupported
-		@unknown default: .unsupported
+		if await TranslationSessionPool.shared.isKnownInstalled(from: source, to: target) {
+			return .installed
 		}
+		let result: LanguagePairStatus =
+			switch await LanguageAvailability().status(from: source, to: target) {
+			case .installed: .installed
+			case .supported: .supported
+			case .unsupported: .unsupported
+			@unknown default: .unsupported
+			}
+		if case .installed = result {
+			await TranslationSessionPool.shared.markInstalled(from: source, to: target)
+		}
+		return result
 	}
 
 	/// 委派進程級 `TranslationSessionPool` 以複用 session（每句重建實測多耗約 50ms）。

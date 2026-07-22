@@ -59,13 +59,21 @@ public actor TranslationSessionPool {
 	/// session 建構器（測試注入以觀測建構次數；預設走 macOS 26 standalone init）。
 	private let factory: @Sendable (Locale.Language, Locale.Language) -> TranslationSession
 
-	/// 注入 session 建構器；預設 `TranslationSession(installedSource:target:)`。
+	/// 單件翻譯的實際執行封裝（測試注入以觀測同時執行中數／模擬失敗；預設走真 `session.translate`）。
+	private let translateOperation: @Sendable (TranslationSession, String) async throws -> String
+
+	/// 注入 session 建構器與翻譯執行封裝；預設 `TranslationSession(installedSource:target:)`
+	/// 加真 `session.translate`——兩者皆僅供測試觀測，production 呼叫端不帶參數。
 	public init(
 		factory: @escaping @Sendable (Locale.Language, Locale.Language) -> TranslationSession = {
 			TranslationSession(installedSource: $0, target: $1)
+		},
+		translateOperation: @escaping @Sendable (TranslationSession, String) async throws -> String = {
+			try await $0.translate($1).targetText
 		}
 	) {
 		self.factory = factory
+		self.translateOperation = translateOperation
 	}
 
 	/// 取回或建構該語言對的快取 session（測試觀測複用命中的鉤子）。
@@ -95,7 +103,7 @@ public actor TranslationSessionPool {
 		await acquire(key)
 		let session = session(for: key)
 		do {
-			let translated = try await session.translate(text).targetText
+			let translated: String = try await translateOperation(session, text)
 			release(key)
 			return translated
 		} catch {

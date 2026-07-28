@@ -21,6 +21,8 @@
 		{ "name": "b01-css-block-spans", "lane": "b", "desc": "CSS display:block 蓋在 span → 各自成段（真 computed）" },
 		{ "name": "b02-css-display-none", "lane": "b", "desc": "CSS display:none → 整棵跳（真 computed）" },
 		{ "name": "b03-css-block-anchor", "lane": "b", "desc": "CSS display:block 蓋在 a → forceBlock 切三段（真 computed）" },
-		{ "name": "b04-display-contents", "lane": "b", "desc": "display:contents 容器 → 子 block 各自成段" }
+		{ "name": "b04-display-contents", "lane": "b", "desc": "display:contents 容器 → 子 block 各自成段" },
+		{ "name": "b05-display-contents-mixed", "lane": "b", "desc": "display:contents 容器內 inline 與容器外 inline 併同一段（透明穿透、容器非 flush 邊界）" },
+		{ "name": "b06-inline-grid-blocks", "lane": "b", "desc": "inline-grid 容器不吞段：grid item 被 blockify → 各自成段（真 computed）" }
 	]
 }

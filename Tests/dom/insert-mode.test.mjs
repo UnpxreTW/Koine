@@ -150,6 +150,70 @@ test("短原文仍寫 title（按鈕軸的既有行為不因新規則改變）",
 	assert.equal(doc.getElementById("p").getAttribute("title"), "简体短句。");
 });
 
+test('lang="" ＝語言未知、不繼承祖先（HTML 規範）：簡中頁內的空 lang 區塊不得就地取代', () => {
+	// `lang=""` 在 HTML 規範裡是「語言未知」，明確**不**繼承祖先。若把「沒有 lang 屬性」與
+	// 「lang 為空字串」折成同一態，`<div lang="">` 就會靜默吃到 `<html lang="zh-CN">`——
+	// 而這一側是破壞性的（誤判成簡中即就地取代、原文從頁面消失）。漢字安全閘擋不住這個
+	// 情境：內容本來就是漢字。
+	const doc = docFrom(`<div lang=""><p id="p">这是简体中文段落内容。</p></div>`, ` lang="zh-CN"`);
+	const segs = collectWith(doc);
+	assert.equal(segs[0].anchor.insertMode, "after-segment", 'lang="" 應阻斷繼承、不得就地取代');
+
+	draftPending(segs);
+	koine.insertTranslations(segs);
+	assert.equal(doc.getElementById("p").textContent, "这是简体中文段落内容。", "原文必須留在頁面上");
+
+	// 對照：祖先真的是 zh-CN（無空 lang 阻斷）→ 照常就地取代，證明上面不是整條軸壞掉。
+	const ctrl = docFrom(`<div lang="zh-CN"><p id="p">这是简体中文段落内容。</p></div>`);
+	assert.equal(collectWith(ctrl)[0].anchor.insertMode, "replace");
+});
+
+test('兩條語言查詢路徑對 lang="" 必須給同一個答案（下行增量 vs closest 防禦路徑）', () => {
+	// 採集路徑讀 NodeLabel.lang（下行增量）、防禦路徑走 effectiveLangOf(closest)。兩者分歧
+	// 時，未進 labels 的節點（動態重採、離線片段）會走到與採集期相反的判定。
+	const doc = docFrom(`<div lang=""><p id="p">这是简体中文段落内容。</p></div>`, ` lang="zh-CN"`);
+	const p = doc.getElementById("p");
+	assert.equal(koine.effectiveLangOf(p), "", 'closest 路徑應回 ""（語言未知）、不是 null 也不是 zh-cn');
+	assert.equal(koine.ownLangOf(doc.querySelector("div")), "", 'ownLangOf 對 lang="" 應回 ""');
+	assert.equal(koine.ownLangOf(p), null, "無 lang 屬性應回 null（＝繼承）");
+	assert.equal(koine.isSimplifiedChinese(""), false, '"" 不是簡中語碼');
+});
+
+test("縮排排版的按鈕仍寫 title：長度閘比的是 normalize 後的 source、不是原始 textContent", () => {
+	// 多行排版是真實 HTML 的主流寫法。窄判準卡的是 source.length（normalize 後），若 title
+	// 閘改比 snapshot.length（含縮排）就會兩邊比錯，同一顆按鈕寫一行有 title、寫三行沒有。
+	const doc = docFrom(`<button id="b">\n          确认提交\n        </button>`);
+	const segs = collectWith(doc);
+	assert.equal(segs[0].source, "确认提交");
+	assert.ok(segs[0].meta.replaceSnapshot.length > koine.REPLACE_TITLE_MAX_CHARS, "前提：原始快照含縮排、超過上限");
+
+	draftPending(segs);
+	koine.insertTranslations(segs);
+	const b = doc.getElementById("b");
+	assert.equal(b.getAttribute("title"), "确认提交", "title 應為 normalize 後的原文、不帶縮排");
+	assert.equal(
+		b.getAttribute("data-koine-original"), segs[0].meta.replaceSnapshot,
+		"data-koine-original 仍存逐字快照（還原用、連空白一起留）",
+	);
+});
+
+test("Document / DocumentFragment 為 root：容器不擋子代（以子樹為 root 呼叫的典型場景）", () => {
+	const doc = docFrom(`<p>Hello there friend.</p>`);
+	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false });
+	assert.ok(
+		koine.collectSegments(doc, ctx, { walkId: 1 }).length >= 1,
+		"以 document 為 root 應採得到段",
+	);
+
+	const frag = doc.createDocumentFragment();
+	const p = doc.createElement("p");
+	p.textContent = "Fragment paragraph here.";
+	frag.appendChild(p);
+	const segs = koine.collectSegments(frag, ctx, { walkId: 1 });
+	assert.equal(segs.length, 1, "以 DocumentFragment 為 root 應採得到段");
+	assert.equal(segs[0].source, "Fragment paragraph here.");
+});
+
 // ---------------------------------------------------------------------------
 // 結構安全前提：兩軸共用
 // ---------------------------------------------------------------------------

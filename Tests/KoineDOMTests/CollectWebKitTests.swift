@@ -271,7 +271,10 @@ private let langPairRenderBody = """
 	    const el = document.getElementById(id);
 	    return { text: el.textContent, translated: el.hasAttribute('data-koine-translated') };
 	  };
-	  return JSON.stringify({ zh: read('zh'), en: read('en') });
+	  return JSON.stringify({
+	    zh: read('zh'), en: read('en'),
+	    wrappers: document.querySelectorAll('.koine-translated').length,
+	  });
 	})();
 	"""
 
@@ -313,6 +316,10 @@ private struct LangPairRender: Decodable {
 
 	/// 英文段（預期並列、原文不動）。
 	let en: ElementState
+
+	/// 插回後全頁的譯文 wrapper 數。少了這條，「英文段完全沒插回」與「英文段正確並列插回」
+	/// 對其餘斷言而言長得一模一樣（原文未變、未帶標記），測試會對 render 失敗毫無鑑別力。
+	let wrappers: Int
 }
 
 // MARK: - NavDelegate
@@ -483,6 +490,7 @@ private final class CollectWebKitTests {
 			"英文原文必須原封不動留在頁面上",
 		)
 		#expect(!render.en.translated, "英文段走並列、原元素不被標記")
+		#expect(render.wrappers == 1, "恰好一個譯文 wrapper：英文段真的並列插回了，不是整段沒插")
 	}
 
 	/// 載入 HTML 並 await 導航完成（保留 delegate 強參考至完成）。

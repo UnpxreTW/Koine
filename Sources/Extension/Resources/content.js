@@ -43,8 +43,9 @@ const OPAQUE_INLINE_TAGS = new Set(["CODE", "TIME"]);
  * §3.5 BULK_TRANSLATE_NO_TAGS — translate="no" 在**整站級**容器視為框架誤標、降級不尊重。
  * 只收 BODY：`MAIN` / `ARTICLE` / `SECTION` 上的標記一律尊重——站台意圖優先於救誤標，
  * 代價（整站誤標若標在 MAIN／ARTICLE 上會整段不翻）已知並接受。
- * BODY 是 collectSegments 的預設 root、`walkAndLabel` 會分類 root 自身，故此項是實際生效的
- * 降級路徑（非裝飾）：拿掉它，`<body translate="no">` 的頁面整頁採不到任何段。
+ * BODY 之所以必須留著：它是 collectSegments 的預設 root，`walkAndLabel` 會分類 root 自身，
+ * root 落 SKIP_SUBTREE 就整棵不採（見 collectSegments 尾端的 root 閘）——`<body translate="no">`
+ * 的頁面會一段都採不到。
  */
 const BULK_TRANSLATE_NO_TAGS = new Set(["BODY"]);
 
@@ -69,6 +70,14 @@ const NODE_COMMENT = 8;
 
 /** button-class 段的譯文換字上限字數（超過退回一般 block／wrapper 流程）。 */
 const BUTTON_CLASS_MAX_CHARS = 20;
+
+/**
+ * §9.2 replace 段把原文寫進 `title` 的長度上限。`title` 是「短標籤的 tooltip」慣例：整段文章
+ * 塞進去會變成巨大 tooltip，且 `title` 會被輔助技術當成該元素的可及描述唸出。沿用 button-class
+ * 的「短互動文字」門檻、不另立第二套長度標準——超過就只留 `data-koine-original`（純資料、
+ * 不影響 hover 與可及名稱）。
+ */
+const REPLACE_TITLE_MAX_CHARS = BUTTON_CLASS_MAX_CHARS;
 
 /** @param {Element} el */
 function hasButtonRole(el) {
@@ -395,11 +404,33 @@ function isAlreadyTargetLang(el, targetLang) {
 	return lang.split("-")[0] === target.split("-")[0];
 }
 
-/** §3.6 目標語是否為繁中（與 isAlreadyTargetLang 共用同一組語碼判準）。 @param {string} [targetLang] */
+/**
+ * §3.6 目標語是否為繁中（`insertMode` 語言對軸用）。
+ * 收 `zh-hk` / `zh-mo`：兩者慣用繁體字，`detectPageLangIsZh` 亦已把 `zh-hk` 收在繁中側。
+ * ⚠ 已知既有落差（非本函式造成）：`isAlreadyTargetLang` 對非 `zh` / `zh-hant` / `zh-tw` 的
+ * 目標語會落到 BCP-47 primary subtag 比對，`zh-HK` 目標下 `lang="zh-CN"` 的段會被判成
+ * 「已達目標語」而整棵跳，輪不到本軸。今天不現形（`makeContext` 硬編 `zh-Hant` 預設、
+ * targetLang 無處配置），目標語一旦可選就要一起修。
+ * @param {string} [targetLang]
+ */
 function isTraditionalChineseTarget(targetLang) {
 	const t = targetLang?.toLowerCase().trim();
 	if (!t) return false;
-	return t === "zh" || t.startsWith("zh-hant") || t.startsWith("zh-tw");
+	return t === "zh" || t.startsWith("zh-hant") || t.startsWith("zh-tw")
+		|| t.startsWith("zh-hk") || t.startsWith("zh-mo");
+}
+
+/** §3.6 語碼是否為簡中變體。 @param {string|null|undefined} lang 已小寫 trim 的語碼 */
+function isSimplifiedChinese(lang) {
+	if (!lang) return false;
+	return lang === "zh-cn" || lang.startsWith("zh-hans");
+}
+
+/** §3.6 元素自身的 `lang`（已小寫 trim）；無則 null。 @param {Element} el */
+function ownLangOf(el) {
+	if (!el || typeof el.getAttribute !== "function") return null;
+	const lang = el.getAttribute("lang")?.toLowerCase().trim();
+	return lang || null;
 }
 
 /**
@@ -409,8 +440,11 @@ function isTraditionalChineseTarget(targetLang) {
  * `<html lang="zh-TW">` 底下未標 lang 的英文段被誤跳），本函式解的是「這段是什麼語言」，
  * 繼承正是 HTML 對 lang 的定義。
  *
- * 只覆蓋語言判定優先序的①自身 lang 與③頁面回退；②「區塊文字內容語言偵測」尚未裁定（門檻值／
- * 偵測方式／是否引入偵測相依皆未定），此處不實作——查不到 lang 即回 null，呼叫端保守處理。
+ * 只覆蓋「自身 lang」與「祖先／頁面 lang」兩層；**依內容文字偵測語言尚未實作**，查不到 lang
+ * 即回 null、呼叫端保守處理（不確定就不動原文）。
+ *
+ * 採集路徑不呼叫本函式——`walkAndLabel` 已把有效 lang 以下行增量寫進 `NodeLabel.lang`
+ * （O(1)/段，同 region 的作法）；本函式是未進 labels 的防禦路徑與純函式測試用。
  * @param {Element} el
  * @returns {string|null} 已小寫 trim 的語碼；查無回 null
  */
@@ -422,18 +456,7 @@ function effectiveLangOf(el) {
 	return lang || null;
 }
 
-/**
- * §3.6 段是否為「簡中來源 → 繁中目標」語言對。簡繁字面幾乎相同，並排只是重複且難看，
- * 故此語言對的插回走就地取代（見 §9.2 insertMode）。
- * @param {Element} el
- * @param {string} [targetLang]
- */
-function isSimplifiedToTraditional(el, targetLang) {
-	if (!isTraditionalChineseTarget(targetLang)) return false;
-	const lang = effectiveLangOf(el);
-	if (!lang) return false;
-	return lang === "zh-cn" || lang.startsWith("zh-hans");
-}
+
 
 // ============================================================================
 // §6.5 classifyRegion 區域分類（P3）：Segment 標 main / chrome，供 §10 排程消費
@@ -590,6 +613,7 @@ function* childNodes(node) {
  * @property {boolean} hasBlockDescendant // §P4：isBlock 拆解出的純子代旗標（不含自身 shallowBlock），
  *                                         // 供 button-class 窄判準「無 block 子」核對（KO-5）
  * @property {boolean} transparent     // §2.4 display:contents：本身無盒，第二遍就地展開子節點重判
+ * @property {string|null} lang        // §3.6 有效 lang：自身 lang，否則繼承祖先（含 <html>）；查無為 null
  * @property {RegionValue|null} region     // §6.5 最近 landmark 祖先（含自身）；無 landmark 為 null
  * @property {RegionValue|null} regionHint // §6.5 最近 class/id hint（含自身）；無訊號為 null
  */
@@ -609,32 +633,37 @@ function walkAndLabel(root, ctx) {
 	let rootLandmark = null;
 	/** @type {RegionValue|null} */
 	let rootHint = null;
+	// §3.6 lang 同走下行增量（最近者勝）：root 的起始值取自祖先鏈（root ＝ <body> 時通常是 <html lang>）。
+	/** @type {string|null} */
+	let rootLang = null;
 	const rootEl = /** @type {Element} */ (root);
 	for (let n = rootEl.parentElement; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
 		if (!rootLandmark) rootLandmark = landmarkRegionOf(n);
 		if (!rootHint) rootHint = regionHintOf(n);
-		if (rootLandmark && rootHint) break;
+		if (!rootLang) rootLang = ownLangOf(n);
+		if (rootLandmark && rootHint && rootLang) break;
 	}
 
 	/**
 	 * @param {Node} node
 	 * @param {RegionValue|null} landmark  繼承的最近 landmark region
 	 * @param {RegionValue|null} hint      繼承的最近 class/id hint
+	 * @param {string|null} lang           繼承的最近 lang（§3.6）
 	 * @returns {boolean} hasBlockDescendant（含自身為 block）
 	 */
-	function visit(node, landmark, hint) {
+	function visit(node, landmark, hint, lang) {
 		const { disp, cs } = classifyNode(node, ctx);
 		if (disp === "SKIP_SUBTREE") {
 			labels.set(node, {
 				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
-				region: landmark, regionHint: hint,
+				lang, region: landmark, regionHint: hint,
 			});
 			return false;
 		}
 		if (disp === "OPAQUE_INLINE") {
 			labels.set(node, {
 				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
-				region: landmark, regionHint: hint,
+				lang, region: landmark, regionHint: hint,
 			});
 			return false; // 不展開、不可分割、視為 inline
 		}
@@ -642,7 +671,7 @@ function walkAndLabel(root, ctx) {
 		if (node.nodeType === NODE_TEXT) {
 			labels.set(node, {
 				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
-				region: landmark, regionHint: hint,
+				lang, region: landmark, regionHint: hint,
 			});
 			return false;
 		}
@@ -651,13 +680,16 @@ function walkAndLabel(root, ctx) {
 		// §6.5 下行增量：最近者勝（更近 landmark / hint 覆蓋繼承值）、O(1)/段。
 		const region = landmarkRegionOf(el) || landmark;
 		const nearHint = regionHintOf(el) || hint;
+		const nearLang = ownLangOf(el) || lang;
 		let hasBlockChild = false;
 		for (const child of childNodes(el)) {
-			if (visit(child, region, nearHint)) hasBlockChild = true;
+			if (visit(child, region, nearHint, nearLang)) hasBlockChild = true;
 		}
 		if (el.shadowRoot) {
+			// shadow 內的段沿用宿主元素的有效 lang（`closest` 不跨 shadow 邊界、下行增量會，
+			// 方向上更接近使用者對「這塊是什麼語言」的直覺）。
 			for (const child of childNodes(el.shadowRoot)) {
-				if (visit(child, region, nearHint)) hasBlockChild = true;
+				if (visit(child, region, nearHint, nearLang)) hasBlockChild = true;
 			}
 		}
 
@@ -673,12 +705,12 @@ function walkAndLabel(root, ctx) {
 		const isBlock = shallowBlock || hasBlockChild;
 		labels.set(node, {
 			disp, cs, isBlock, hasBlockDescendant: hasBlockChild, transparent,
-			region, regionHint: nearHint,
+			lang: nearLang, region, regionHint: nearHint,
 		});
 		return isBlock;
 	}
 
-	visit(root, rootLandmark, rootHint);
+	visit(root, rootLandmark, rootHint, rootLang);
 	return labels;
 }
 
@@ -717,7 +749,7 @@ function collectSegments(root, ctx, opts = {}) {
 		const transparent = !isBlock && node.nodeType === NODE_ELEMENT && disp === "WALK"
 			&& !!cs && isTransparentDisplay(cs.display);
 		// 未知子代資訊時保守視為「有 block 子」，防禦路徑不誤判為 button-class（§P4）。
-		return { disp, cs, isBlock, hasBlockDescendant: true, transparent, region: null, regionHint: null };
+		return { disp, cs, isBlock, hasBlockDescendant: true, transparent, lang: null, region: null, regionHint: null };
 	}
 	/**
 	 * §2.4 透明穿透：`display:contents` 元素不產生盒，走訪時就地以其子節點取代自身（可巢狀）。
@@ -774,19 +806,40 @@ function collectSegments(root, ctx, opts = {}) {
 	 * - ①**段的種類**：button-class 窄判準命中（§P4 KO-5/6/7；並列插回會破按鈕排版）。
 	 * - ②**語言對**：簡中來源 → 繁中目標（§3.6；簡繁字面幾乎相同，並排只是重複且難看）。
 	 *
-	 * 兩軸共用同一組**結構安全前提**（只有純文字子代）：原地換字用 `textContent` 整個覆寫，
-	 * 有元素子代就會連帶砍掉 icon／inline 標記且無法還原，故不安全者一律退回 `after-segment`
-	 * ——並列 wrapper 只加 sibling、不動原文，天生安全。①軸的這道閘在 isButtonClassCandidate
-	 * 內（窄判準的一部分），②軸在此處補上。
+	 * 兩軸共用一組**結構安全前提**：只有純文字子代。原地換字用 `textContent` 整個覆寫、會連帶
+	 * 砍掉 icon／inline 標記且無法還原，不安全者一律退回 `after-segment`——並列 wrapper 只加
+	 * sibling、不動原文，天生安全。①軸的這道閘在 `isButtonClassCandidate` 內（窄判準的一部分），
+	 * ②軸在本函式補上。
+	 *
+	 * **兩軸不共用**的是①軸的 `BUTTON_CLASS_MAX_CHARS` 長度閘——那是按鈕排版的約束、不是語言
+	 * 的約束。為免②軸把①軸刻意退回的長按鈕撿走，本函式對所有 button-class 元素直接退回。
 	 * @param {Node} blockNode
+	 * @param {string} source        已 normalize 的段落原文（②軸的 script 安全閘要用）
 	 * @param {boolean} buttonClass  已算好的 §P4 窄判準結果（其內部已含結構安全前提）
 	 * @returns {InsertMode}
 	 */
-	function decideInsertMode(blockNode, buttonClass) {
+	function decideInsertMode(blockNode, source, buttonClass) {
 		if (buttonClass) return "replace";
 		if (!blockNode || blockNode.nodeType !== NODE_ELEMENT) return "after-segment";
 		const el = /** @type {Element} */ (blockNode);
-		if (!isSimplifiedToTraditional(el, ctx.targetLang)) return "after-segment";
+		// ①軸的元素沒通過窄判準＝刻意退回（太長／有 block 子／有元素子代），②軸不得從旁邊撿走
+		// ——否則 21 字的按鈕在簡中頁會繞過 ≤20 字閘，換字照樣撐破按鈕排版。
+		if (isButtonClassElement(el)) return "after-segment";
+		// 文件／頁面根不就地取代：覆寫 <body> 的 textContent、或把整段原文寫成 <body title>
+		// 都不是「段」層級該做的事。
+		if (el.tagName === "BODY" || el.tagName === "HTML") return "after-segment";
+		if (!isTraditionalChineseTarget(ctx.targetLang)) return "after-segment";
+		const label = labels.get(blockNode);
+		const lang = label ? label.lang : effectiveLangOf(el); // 未進 labels 才走防禦路徑
+		if (!isSimplifiedChinese(lang)) return "after-segment";
+		// **安全閘**：lang 常來自頁面級回退（`<html lang="zh-CN">`），簡中站內未標 lang 的
+		// 英文留言區、日文引用段都會落在同一個 lang 底下。就地取代是破壞性的（原文從頁面
+		// 消失、只剩 data 屬性），而「簡繁字面幾乎相同所以不必並排」的理由對這些段完全不成立。
+		// 故再要求段自身的文字真的是漢字且無假名／諺文（沿用 §4.9 同一組 script 判準）。
+		// 這**不是**依內容偵測語言那一層：它只會縮小 replace 的範圍、判不出來一律退回並列。
+		if (!RE_HAS_HAN.test(source) || RE_HAS_KANA.test(source) || RE_HAS_HANGUL.test(source)) {
+			return "after-segment";
+		}
 		return hasOnlyTextChildren(el) ? "replace" : "after-segment";
 	}
 
@@ -831,7 +884,7 @@ function collectSegments(root, ctx, opts = {}) {
 		}
 		// §9.2：插回模式在採集期決定（render 只認 anchor.insertMode、不再各自判斷觸發條件）。
 		const buttonClass = isButtonClassCandidate(blockNode, source);
-		const insertMode = decideInsertMode(blockNode, buttonClass);
+		const insertMode = decideInsertMode(blockNode, source, buttonClass);
 		/** @type {Segment} */
 		const seg = {
 			id, order, region, source,
@@ -852,7 +905,13 @@ function collectSegments(root, ctx, opts = {}) {
 		order++;
 	}
 
-	collect(root);
+	// root 自身的處置也算數：`walkAndLabel` 會分類 root，落 SKIP_SUBTREE / OPAQUE_INLINE 就整棵
+	// 不採。少了這道閘，`collect` 直接走 `effectiveChildren(root)`，而子代根本沒進 `labels`
+	// （visit 在 SKIP_SUBTREE root 即 return），於是全落 `classifyLabel` 防禦路徑被重判成 WALK
+	// ——root 的 `translate="no"` / `hidden` / `aria-hidden` / `contenteditable` / `display:none`
+	// 被靜默吃掉。生產路徑 root 恆為 `<body>`（且 BODY 在 §3.5 降級集合裡）故現況不變，
+	// 但以子樹為 root 呼叫（動態重採）時這是必要的。
+	if (labelOf(root).disp === "WALK") collect(root);
 	return segments;
 }
 
@@ -974,8 +1033,13 @@ function insertTranslations(segments, opts = {}) {
 			// textContent 出現差異，但仍會被緊接著的 textContent 覆寫整個砍掉。插回前必須用採集時
 			// 同一套「只有純文字子代」判準重新核一次目前的即時結構，結構已變同樣視為 drift、放棄覆寫。
 			if (!hasOnlyTextChildren(/** @type {Element} */ (block))) continue;
-			block.setAttribute("data-koine-original", snapshot); // KO-7 原文存 data 屬性
-			block.setAttribute("title", snapshot);                 // KO-6 原文存 title tooltip
+			block.setAttribute("data-koine-original", snapshot); // KO-7 原文存 data 屬性（純資料、無 AT 影響）
+			// KO-6 原文存 title tooltip，但兩個前提：①元素本來沒有 `title`——覆寫會抹掉站台自己的
+			// 提示且無還原路徑；②原文短到適合當 tooltip（見 REPLACE_TITLE_MAX_CHARS）。
+			// 不符就只留 `data-koine-original`。
+			if (!block.hasAttribute("title") && snapshot.length <= REPLACE_TITLE_MAX_CHARS) {
+				block.setAttribute("title", snapshot);
+			}
 			block.textContent = text;                               // KO-6 直接換
 			block.setAttribute("data-koine-translated", "");        // KO-7 防自吞標記（消失即視為未譯）
 			inserted.push(block);
@@ -1317,7 +1381,8 @@ const __koineExports = {
 	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS,
 	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
 	isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
-	isTraditionalChineseTarget, effectiveLangOf, isSimplifiedToTraditional,
+	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,
+	REPLACE_TITLE_MAX_CHARS,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,

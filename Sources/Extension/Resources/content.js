@@ -39,8 +39,14 @@ const SKIP_SUBTREE_TAGS = new Set([
 /** §3.2 OPAQUE_INLINE_TAGS — 不展開、textContent 併入父段（不可分割原子）。 */
 const OPAQUE_INLINE_TAGS = new Set(["CODE", "TIME"]);
 
-/** §3.5 BULK_TRANSLATE_NO_TAGS — translate="no" 在大容器視為框架誤標、降級不尊重。 */
-const BULK_TRANSLATE_NO_TAGS = new Set(["BODY", "MAIN", "ARTICLE", "SECTION"]);
+/**
+ * §3.5 BULK_TRANSLATE_NO_TAGS — translate="no" 在**整站級**容器視為框架誤標、降級不尊重。
+ * 只收 BODY：`MAIN` / `ARTICLE` / `SECTION` 上的標記一律尊重——站台意圖優先於救誤標，
+ * 代價（整站誤標若標在 MAIN／ARTICLE 上會整段不翻）已知並接受。
+ * BODY 是 collectSegments 的預設 root、`walkAndLabel` 會分類 root 自身，故此項是實際生效的
+ * 降級路徑（非裝飾）：拿掉它，`<body translate="no">` 的頁面整頁採不到任何段。
+ */
+const BULK_TRANSLATE_NO_TAGS = new Set(["BODY"]);
 
 /** §3.4 role 強制黑名單。 */
 const SKIP_ROLES = new Set([

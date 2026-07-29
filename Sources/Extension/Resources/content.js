@@ -941,8 +941,10 @@ function collectSegments(root, ctx, opts = {}) {
 	// `anchor.block` 是容器本身（非 Element）。而下游兩個 consumer 都只吃 Element——
 	// `insertTranslations` 的 `block.after` 不存在時靜默 `continue`（段已送翻、譯文丟失無警訊），
 	// `observeSegments` 的 `obs.observe(block)` 在真 IntersectionObserver 下丟 TypeError
-	// （WebIDL 簽名收 `Element`）。**兩者實際落哪一個，取決於該段有沒有被 §10.1 的 eager 預算
-	// 涵蓋而免於觀察**（`observeSegments` 跑在 `insertTranslations` 之前，丟出就整條管線中止）
+	// （WebIDL 簽名收 `Element`）。**兩者實際落哪一個，取決於該容器 block 上的段是否**全部**被
+	// §10.1 的 eager 預算涵蓋而免於觀察**（免觀察的閘是 `segs.every(...enqueued)`——同一個 block
+	// 掛多段時只要有一段沒被涵蓋就會走到 `observe`；`observeSegments` 跑在 `insertTranslations`
+	// 之前，丟出就整條管線中止）
 	// ——即同一份輸入的結果會隨段的文件序落點而變。`<template>.content` 與
 	// `range.cloneContents()` 頂層帶裸文字正是常態形狀。把「部分可用、行為隨落點而變」換成
 	// 「明確不支援」，比留著一個看運氣的入口好。

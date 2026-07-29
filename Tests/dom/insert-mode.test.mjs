@@ -37,7 +37,8 @@ function captureWarn(fn) {
 	console.warn = (...args) => { calls.push(args); };
 	try {
 		const r = fn();
-		// 擋 async：非同步 fn 會在 promise settle 前就還原並回空陣列，配上「不得出聲」類斷言
+		// 擋 async：非同步 fn 會在 promise settle 前就還原，只收得到第一個 await 之前的 warn
+		// （常常就是空陣列），配上「不得出聲」類斷言
 		// （assert.deepEqual(warns, [])）就是靜默假綠——而那正是這個 helper 最該擋住的誤用。
 		if (r && typeof r.then === "function") throw new TypeError("captureWarn 只收同步 fn");
 	} finally {
@@ -274,7 +275,8 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 	// 直接掛裸文字或 inline 時，段在容器上成形、anchor.block 就是容器本身（非 Element），
 	// insertTranslations 的 block.after 不存在而靜默跳過（段已送翻、譯文丟失無警訊），
 	// 或 observeSegments 的 observe(block) 在真 IntersectionObserver 下丟 TypeError 並中止整條
-	// 管線——落哪一個取決於該段有沒有被 eager 預算涵蓋而免於觀察，也就是隨段的文件序落點而變。
+	// 管線——落哪一個取決於該容器 block 上的段是否全部被 eager 預算涵蓋而免於觀察，也就是隨段的
+	// 文件序落點而變。
 	// <template>.content 與 range.cloneContents() 頂層帶裸文字正是常態形狀。
 	//
 	// 要真正支援容器 root，得先解掉兩個既有風險（兩者在 root 閘之前就存在）：①頁面級剪枝

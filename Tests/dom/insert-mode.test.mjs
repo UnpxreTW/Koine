@@ -25,6 +25,20 @@ function collectWith(doc, ctxOpts = {}) {
 
 const DRAFT = (s) => `譯‹${s.source}›`;
 
+/**
+ * 跑一段程式並攔下 console.warn，回收集到的訊息。
+ * 兩個用途：①故意餵壞值的測試不該每跑必噴 stderr（真的有非預期 warn 會被淹掉）；
+ * ②「什麼情況該出聲、什麼情況不該」本身就是一條界線，值得斷言而不是只靠讀碼。
+ */
+function captureWarn(fn) {
+	const original = console.warn;
+	/** @type {any[][]} */
+	const calls = [];
+	console.warn = (...args) => { calls.push(args); };
+	try { fn(); } finally { console.warn = original; }
+	return calls;
+}
+
 function draftPending(segs) {
 	for (const s of segs) {
 		if (s.state === koine.SegmentState.PENDING) {
@@ -197,9 +211,10 @@ test("縮排排版的按鈕仍寫 title：長度閘比的是 normalize 後的 so
 	);
 });
 
-test("非字串譯文不得寫進 DOM：replace 分支寫壞會永遠不自癒（比 after-segment 嚴重得多）", () => {
+test("非字串譯文不得寫進 DOM：replace 分支寫壞後除非節點被換掉否則不自癒（比 after-segment 嚴重得多）", () => {
 	// 非字串 text 會被 `block.textContent = text` 寫成 "[object Object]"，同時 data-koine-translated
-	// 被設上 → classifyNode [1] 之後每次採集都整棵跳過、永遠不會自癒，而原文只剩在
+	// 被設上 → classifyNode [1] 之後每次採集都整棵跳過，除非該節點被換掉或標記被清否則不自癒，
+	// 而原文只剩在
 	// data-koine-original（還原路徑尚未實作）。同一個壞值走 after-segment 只是多一個垃圾
 	// wrapper、原文完好——所以守衛對 replace 分支才是要緊的那個。
 	const doc = docFrom(`<button id="b">确认提交</button><p id="q">Plain paragraph here.</p>`);
@@ -214,7 +229,10 @@ test("非字串譯文不得寫進 DOM：replace 分支寫壞會永遠不自癒�
 		state: koine.SegmentState.DRAFTED, draft: 42,
 		anchor: { block: doc.getElementById("q"), insertMode: "after-segment" },
 	};
-	assert.equal(koine.insertTranslations([bad, alsoBad]).length, 0, "兩個壞值都不得插回");
+	const warns = captureWarn(() => {
+		assert.equal(koine.insertTranslations([bad, alsoBad]).length, 0, "兩個壞值都不得插回");
+	});
+	assert.equal(warns.length, 2, "兩個型別錯都該出聲（靜默跳過會讓現場呈現成「翻了但沒出現」）");
 
 	const b = doc.getElementById("b");
 	assert.equal(b.textContent, "确认提交", "原文必須留著、不得變成 [object Object]");
@@ -233,7 +251,10 @@ test("壞掉的 refined 不得蓋掉好的 draft：refined ?? draft 是 refined 
 		anchor: { block: doc.getElementById("b"), insertMode: "replace" },
 		meta: { replaceSnapshot: "确认提交" },
 	};
-	assert.equal(koine.insertTranslations([seg]).length, 0, "壞掉的 refined 不得寫進 DOM");
+	const warns = captureWarn(() => {
+		assert.equal(koine.insertTranslations([seg]).length, 0, "壞掉的 refined 不得寫進 DOM");
+	});
+	assert.equal(warns.length, 1, "型別錯該出聲");
 	const b = doc.getElementById("b");
 	assert.equal(b.textContent, "确认提交", "原文必須留著（不得寫成 [object Object]）");
 	assert.ok(!b.hasAttribute("data-koine-translated"), "沒寫成功就不得標記已譯");
@@ -244,9 +265,14 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 	// 而且**頂層是 block 元素時整條管線是通的**（段在該 block 上成形、anchor.block 是 Element、
 	// 譯文真的插得回去）。收窄的理由不是「完全不能用」，是**同一支 API 兩種結果**：容器頂層
 	// 直接掛裸文字或 inline 時，段在容器上成形、anchor.block 就是容器本身（非 Element），
-	// insertTranslations 的 block.after 不存在而靜默跳過（段已送翻、譯文丟失無警訊），
-	// observeSegments 的 observe(block) 在真 IntersectionObserver 下會丟 TypeError。
-	// <template>.content 與 range.cloneContents() 頂層帶裸文字正是常態。
+	// insertTranslations 的 block.after 不存在而靜默跳過（段已送翻、譯文丟失無警訊）。
+	// 這類段一律被判 MAIN、吃得到 EAGER_MAIN_BUDGET（=10）的載入即發預算，所以 ≤10 個時
+	// 走不到 observe(block)；超過才會在真 IntersectionObserver 下丟 TypeError 並中止整條管線
+	// （實測門檻恰在 10／11 之間）。<template>.content 與 range.cloneContents() 頂層帶裸文字
+	// 正是常態，且通常是個位數節點——落在「靜默丟失」那一側。
+	//
+	// 這條「兩種結果」只在 DocumentFragment 那腿成立：DOM 規範不允許 Document 直接掛 Text
+	// 子節點，Document 頂層的 anchor 恆為 Element；Document root 真正的風險是下面的①。
 	//
 	// 要真正支援容器 root，得先解掉兩個既有風險（兩者在 root 閘之前就存在）：①頁面級剪枝
 	// 豁免掛在 <body> 上，choke point 往上移到 <html> 會讓 <html lang="zh-TW"> 這類主流寫法
@@ -387,4 +413,21 @@ test("ownLangOf：只讀自身屬性、已小寫 trim、無屬性回 null", () =
 	const doc = docFrom(`<div lang="ZH-CN "><p id="p">x</p></div>`);
 	assert.equal(koine.ownLangOf(doc.querySelector("div")), "zh-cn");
 	assert.equal(koine.ownLangOf(doc.getElementById("p")), null, "自身無 lang 不吃祖先");
+});
+
+test("有效終態不得出聲：未譯（null／undefined）與譯文＝原文（空字串）都靜默跳過", () => {
+	// `text == null` 與 `""` 是有效終態（§9.1），跳過是對的、不該吵。這條同時釘住一個很容易
+	// 犯的簡化：把 `text == null` 當成被下面的 `typeof` 涵蓋而刪掉——刪了之後每個未譯段都會
+	// 噴一則 warn。
+	const doc = docFrom(`<p id="a">Alpha paragraph here.</p><p id="b">Beta paragraph here.</p><p id="c">Gamma paragraph here.</p>`);
+	const mk = (id, draft) => ({
+		id: `k8-${id}`, order: 0, region: "main", source: "x", state: koine.SegmentState.DRAFTED,
+		draft, anchor: { block: doc.getElementById(id), insertMode: "after-segment" },
+	});
+	const segs = [mk("a", null), mk("b", undefined), mk("c", "")];
+	const warns = captureWarn(() => {
+		assert.equal(koine.insertTranslations(segs).length, 0, "三者都不插回");
+	});
+	assert.deepEqual(warns, [], "有效終態一則 warn 都不該有");
+	assert.equal(doc.querySelectorAll(".koine-translated").length, 0, "不得插 wrapper");
 });

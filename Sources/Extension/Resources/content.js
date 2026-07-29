@@ -395,6 +395,46 @@ function isAlreadyTargetLang(el, targetLang) {
 	return lang.split("-")[0] === target.split("-")[0];
 }
 
+/** §3.6 目標語是否為繁中（與 isAlreadyTargetLang 共用同一組語碼判準）。 @param {string} [targetLang] */
+function isTraditionalChineseTarget(targetLang) {
+	const t = targetLang?.toLowerCase().trim();
+	if (!t) return false;
+	return t === "zh" || t.startsWith("zh-hant") || t.startsWith("zh-tw");
+}
+
+/**
+ * §3.6 段的**有效** lang：自身 `lang` 優先、否則取最近有 `lang` 的祖先（含 `<html>`＝頁面級回退）。
+ *
+ * 與 `isAlreadyTargetLang`「只看自身、不繼承」刻意不同——那條解的是「這段要不要翻」（繼承會讓
+ * `<html lang="zh-TW">` 底下未標 lang 的英文段被誤跳），本函式解的是「這段是什麼語言」，
+ * 繼承正是 HTML 對 lang 的定義。
+ *
+ * 只覆蓋語言判定優先序的①自身 lang 與③頁面回退；②「區塊文字內容語言偵測」尚未裁定（門檻值／
+ * 偵測方式／是否引入偵測相依皆未定），此處不實作——查不到 lang 即回 null，呼叫端保守處理。
+ * @param {Element} el
+ * @returns {string|null} 已小寫 trim 的語碼；查無回 null
+ */
+function effectiveLangOf(el) {
+	if (!el || typeof el.closest !== "function") return null;
+	const holder = el.closest("[lang]");
+	if (!holder || typeof holder.getAttribute !== "function") return null;
+	const lang = holder.getAttribute("lang")?.toLowerCase().trim();
+	return lang || null;
+}
+
+/**
+ * §3.6 段是否為「簡中來源 → 繁中目標」語言對。簡繁字面幾乎相同，並排只是重複且難看，
+ * 故此語言對的插回走就地取代（見 §9.2 insertMode）。
+ * @param {Element} el
+ * @param {string} [targetLang]
+ */
+function isSimplifiedToTraditional(el, targetLang) {
+	if (!isTraditionalChineseTarget(targetLang)) return false;
+	const lang = effectiveLangOf(el);
+	if (!lang) return false;
+	return lang === "zh-cn" || lang.startsWith("zh-hans");
+}
+
 // ============================================================================
 // §6.5 classifyRegion 區域分類（P3）：Segment 標 main / chrome，供 §10 排程消費
 // ============================================================================
@@ -514,6 +554,12 @@ const SegmentState = Object.freeze({
  */
 
 /**
+ * §9.2 插回模式——譯文怎麼進 DOM。**replace 的唯一擴充點**，兩條觸發軸共用同一條 render 分支：
+ * ①段的種類（§P4 button-class）②語言對（簡中→繁中）。詳見 collectSegments 的 decideInsertMode。
+ * @typedef {'after-segment'|'replace'} InsertMode
+ */
+
+/**
  * @typedef {object} Segment
  * @property {string} id
  * @property {number} order
@@ -521,9 +567,10 @@ const SegmentState = Object.freeze({
  * @property {string} source
  * @property {object} anchor
  * @property {string} state
- * @property {'block'|'button'} [kind]   // §P4：button-class 窄判準命中時 = "button"（原地換字、無 wrapper）
- * @property {{ protectedSpans?: ProtectedSpan[], skipReason?: string, charCount?: number, buttonSnapshot?: string }} [meta]
- *   buttonSnapshot：§P4 button-class 段專用，採集當下未過濾的原始 textContent（供插回時字面防呆比對）
+ * @property {'block'|'button'} [kind]   // §P4：button-class 窄判準命中時 = "button"（段的種類分類；
+ *                                       // 插回行為看 anchor.insertMode、不看本欄）
+ * @property {{ protectedSpans?: ProtectedSpan[], skipReason?: string, charCount?: number, replaceSnapshot?: string }} [meta]
+ *   replaceSnapshot：insertMode = "replace" 的段專用，採集當下未過濾的原始 textContent（供插回時字面防呆比對）
  */
 
 // ============================================================================
@@ -722,6 +769,27 @@ function collectSegments(root, ctx, opts = {}) {
 		return !hasBlockDescendant;
 	}
 
+	/**
+	 * §9.2 插回模式決策——`insertMode` 是 replace 的**唯一**擴充點，兩條觸發軸走同一條 render 分支：
+	 * - ①**段的種類**：button-class 窄判準命中（§P4 KO-5/6/7；並列插回會破按鈕排版）。
+	 * - ②**語言對**：簡中來源 → 繁中目標（§3.6；簡繁字面幾乎相同，並排只是重複且難看）。
+	 *
+	 * 兩軸共用同一組**結構安全前提**（只有純文字子代）：原地換字用 `textContent` 整個覆寫，
+	 * 有元素子代就會連帶砍掉 icon／inline 標記且無法還原，故不安全者一律退回 `after-segment`
+	 * ——並列 wrapper 只加 sibling、不動原文，天生安全。①軸的這道閘在 isButtonClassCandidate
+	 * 內（窄判準的一部分），②軸在此處補上。
+	 * @param {Node} blockNode
+	 * @param {boolean} buttonClass  已算好的 §P4 窄判準結果（其內部已含結構安全前提）
+	 * @returns {InsertMode}
+	 */
+	function decideInsertMode(blockNode, buttonClass) {
+		if (buttonClass) return "replace";
+		if (!blockNode || blockNode.nodeType !== NODE_ELEMENT) return "after-segment";
+		const el = /** @type {Element} */ (blockNode);
+		if (!isSimplifiedToTraditional(el, ctx.targetLang)) return "after-segment";
+		return hasOnlyTextChildren(el) ? "replace" : "after-segment";
+	}
+
 	function collect(node) {
 		/** @type {Node[]} */
 		let buffer = [];
@@ -761,20 +829,24 @@ function collectSegments(root, ctx, opts = {}) {
 			order++;
 			return;
 		}
+		// §9.2：插回模式在採集期決定（render 只認 anchor.insertMode、不再各自判斷觸發條件）。
+		const buttonClass = isButtonClassCandidate(blockNode, source);
+		const insertMode = decideInsertMode(blockNode, buttonClass);
 		/** @type {Segment} */
 		const seg = {
-			id, order, region, source, anchor: makeAnchor(buf, blockNode), state: SegmentState.PENDING,
+			id, order, region, source,
+			anchor: makeAnchor(buf, blockNode, insertMode), state: SegmentState.PENDING,
 		};
-		// §P4：button-class 窄判準命中 → 標記 kind，供 insertTranslations 走原地換字（KO-5/6/7）。
-		// buttonSnapshot 存採集當下「未過濾」的原始 textContent（非 source——source 已被 extractText
+		// §P4：button-class 是「段的種類」分類，保留供觀測／後續規則用；插回行為看 insertMode。
+		if (buttonClass) seg.kind = "button";
+		// replaceSnapshot 存採集當下「未過濾」的原始 textContent（非 source——source 已被 extractText
 		// 過濾掉 SKIP_SUBTREE 子代／ruby 注音等）：插回時只需拿它與插回當下的 textContent 做同一
 		// property 兩次讀值的字面比對，不必重放 collect() 的過濾規則、不會有兩套還原邏輯彼此漂移的風險。
-		const buttonClass = isButtonClassCandidate(blockNode, source);
-		if (buttonClass) seg.kind = "button";
-		if (spans.length || buttonClass) {
+		const replaceMode = insertMode === "replace";
+		if (spans.length || replaceMode) {
 			seg.meta = {};
 			if (spans.length) { seg.meta.protectedSpans = spans; seg.meta.charCount = source.length; }
-			if (buttonClass) seg.meta.buttonSnapshot = blockNode.textContent || "";
+			if (replaceMode) seg.meta.replaceSnapshot = blockNode.textContent || "";
 		}
 		segments.push(seg);
 		order++;
@@ -792,10 +864,13 @@ function makeId(walkId, order) {
 /**
  * §6.4 / §9.2 anchor 載體：block = 正在收的 block 容器（collect frame 透傳，
  * 比事後 closestBlock(段末節點) 準——巢狀 inline 的段末是 inline 父，會落錯位）；
- * refNode 指段末節點（re-query / v2 替換用）。
+ * refNode 指段末節點（re-query / v2 替換用）；insertMode 是 render 的唯一分派鍵（§9.2）。
+ * @param {Node[]} buf
+ * @param {Node} blockNode
+ * @param {InsertMode} [insertMode]
  */
-function makeAnchor(buf, blockNode) {
-	return { block: blockNode || null, insertMode: "after-segment", refNode: buf[buf.length - 1] };
+function makeAnchor(buf, blockNode, insertMode = "after-segment") {
+	return { block: blockNode || null, insertMode, refNode: buf[buf.length - 1] };
 }
 
 // ============================================================================
@@ -859,12 +934,15 @@ function normalizeSource(text) {
  * 先擋自家標記、整棵跳過，故插回不會被自己重採（§7.1 (c) 自吞防護）。
  * 只新增 sibling、不動原文節點（§7.1 (b)）。
  *
- * §P4 例外：`seg.kind === "button"`（button-class 窄判準命中）改走原地換字——不建 wrapper，
- * 直接覆寫 `block.textContent`，原文存 `title` 與 `data-koine-original`，並以
- * `data-koine-translated` 當防自吞標記（該標記消失即視為未譯、下次採集會重新產生待譯段）。
+ * §9.2 例外：`anchor.insertMode === "replace"` 的段改走**原地換字**——不建 wrapper，直接覆寫
+ * `block.textContent`，原文存 `title` 與 `data-koine-original`，並以 `data-koine-translated`
+ * 當防自吞標記（該標記消失即視為未譯、下次採集會重新產生待譯段）。
+ *
+ * **本分支是 replace 的唯一實作**：觸發條件（§P4 button-class／簡→繁語言對）全在採集期收斂成
+ * `insertMode`，render 只看這一個鍵——兩條軸不各做一套、行為不會漂移。
  *
  * @param {Segment[]} segments
- * @param {{ tag?: string }} [opts]   tag 預設 `div`（M1 固定 block；tag-mirror 留後續；button-class 不適用）
+ * @param {{ tag?: string }} [opts]   tag 預設 `div`（M1 固定 block；tag-mirror 留後續；replace 段不適用）
  * @returns {Element[]} 已插入的 wrapper 或原地換字的元素（依處理序）
  */
 function insertTranslations(segments, opts = {}) {
@@ -878,19 +956,19 @@ function insertTranslations(segments, opts = {}) {
 		const block = seg.anchor && seg.anchor.block;
 		if (!block) continue;
 
-		// §P4 KO-5/6/7：button-class 段原地換字，不加 wrapper。
-		if (seg.kind === "button") {
+		// §9.2 replace：原地換字，不加 wrapper（§P4 KO-5/6/7 與簡→繁共用本分支）。
+		if ((seg.anchor.insertMode || "after-segment") === "replace") {
 			if (typeof block.setAttribute !== "function") continue;
 			// 防呆：採集與插回之間是非同步的（IntersectionObserver lazy 進場 + bridge 往返），
 			// 若元素在這段期間被頁面自身 JS 改動（如登入/登出切換文字），代表譯文已對不上目前狀態——
 			// 放棄本次覆寫，保留元素目前的真實內容，不標記 data-koine-translated，下次採集會依
 			// 當下內容重新產生待譯段。
 			//
-			// 比對法：拿「插回當下」的 textContent 對比「採集當下」存的 buttonSnapshot——兩次讀同一個
+			// 比對法：拿「插回當下」的 textContent 對比「採集當下」存的 replaceSnapshot——兩次讀同一個
 			// property，不重放 collect() 的過濾/擷取規則（曾踩：改用 extractText 版還原比對，
 			// 仍會漏掉 aria-hidden / sr-only / SVG <title> 等 SKIP_SUBTREE 子代文字，導致這些完全
 			// 未變動的按鈕被誤判 drift 而永遠翻不了）。缺快照（防禦路徑）一律視為不可信、放棄覆寫。
-			const snapshot = seg.meta && typeof seg.meta.buttonSnapshot === "string" ? seg.meta.buttonSnapshot : null;
+			const snapshot = seg.meta && typeof seg.meta.replaceSnapshot === "string" ? seg.meta.replaceSnapshot : null;
 			if (snapshot === null || block.textContent !== snapshot) continue;
 			// textContent 字串相等不保證結構沒變：插入一個不含文字的元素子代（如 icon svg）不會讓
 			// textContent 出現差異，但仍會被緊接著的 textContent 覆寫整個砍掉。插回前必須用採集時
@@ -1239,6 +1317,7 @@ const __koineExports = {
 	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS,
 	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
 	isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
+	isTraditionalChineseTarget, effectiveLangOf, isSimplifiedToTraditional,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,

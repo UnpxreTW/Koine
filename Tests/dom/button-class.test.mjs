@@ -34,7 +34,8 @@ test("button-class 判準命中：BUTTON ≤20 字無 block 子 → segment.kind
 	const segs = collect(doc);
 	assert.equal(segs.length, 1);
 	assert.equal(segs[0].kind, "button");
-	assert.equal(segs[0].anchor.block, doc.getElementById("b"));
+	assert.ok(segs[0].anchor.block === doc.getElementById("b"), "anchor.block 應為該 button");
+	assert.equal(segs[0].anchor.insertMode, "replace", "button-class 應轉成 insertMode=replace（render 的唯一分派鍵）");
 });
 
 test("LABEL、role=button（非天生 block 標籤 span）同樣命中窄判準", () => {
@@ -53,6 +54,7 @@ test("超過 20 字的 BUTTON 不命中窄判準（退回一般 block / wrapper 
 	const segs = collect(doc);
 	assert.equal(segs.length, 1);
 	assert.notEqual(segs[0].kind, "button");
+	assert.equal(segs[0].anchor.insertMode, "after-segment", "未命中窄判準應退回並列插回");
 });
 
 test("含 block 子的 BUTTON 不命中窄判準（有 block 子退回一般 block）", () => {
@@ -107,7 +109,7 @@ test("replace 渲染：原地換字＋原文存 title/data-koine-original＋data
 	const btn = doc.getElementById("b");
 
 	assert.equal(inserted.length, 1);
-	assert.equal(inserted[0], btn, "button-class 應回傳原元素本身，非新建 wrapper");
+	assert.ok(inserted[0] === btn, "button-class 應回傳原元素本身，非新建 wrapper");
 	assert.equal(btn.textContent, segs[0].draft, "textContent 應換成譯文");
 	assert.equal(btn.getAttribute("title"), "送出", "title 應存原文（KO-6）");
 	assert.equal(btn.getAttribute("data-koine-original"), "送出", "data-koine-original 應存原文（KO-7）");
@@ -154,15 +156,15 @@ test("防呆：插回前被插入不帶文字的元素子代（如 icon）→ te
 	assert.ok(!btn.hasAttribute("data-koine-translated"), "未覆寫就不應標記已譯");
 });
 
-test("防呆快照機制：純文字 button 的 buttonSnapshot 即等於 source（無元素子代、無過濾差異）", () => {
-	// 命中 button-class 的元素現在保證只有純文字子代（hasOnlyTextChildren 閘），所以 buttonSnapshot
+test("防呆快照機制：純文字 button 的 replaceSnapshot 即等於 source（無元素子代、無過濾差異）", () => {
+	// 命中 button-class 的元素現在保證只有純文字子代（hasOnlyTextChildren 閘），所以 replaceSnapshot
 	// （未過濾的原始 textContent）與 seg.source（normalizeSource 後的送翻文字）在靜態情況下必然
 	// 一致；兩者出現落差只會來自「插回前內容真的變了」（drift），不會來自結構性過濾差異——這正是
 	// 防呆快照機制存在的唯一理由（見前一個「頁面自身 JS 改字」drift 測試）。
 	const doc = docFrom(`<button id="b">送出</button>`);
 	const segs = collect(doc);
 	assert.equal(segs[0].kind, "button");
-	assert.equal(segs[0].meta.buttonSnapshot, segs[0].source, "純文字 button 的快照應等於 source");
+	assert.equal(segs[0].meta.replaceSnapshot, segs[0].source, "純文字 button 的快照應等於 source");
 });
 
 test("自吞防護：已標記的 button 再次採集整棵跳過、不產生新段", () => {
@@ -193,7 +195,7 @@ test("KO-7 重渲染標記消失即自動重譯：節點被整個換掉（無標
 	assert.equal(resegs[0].state, koine.SegmentState.PENDING);
 	assert.equal(resegs[0].kind, "button", "新節點仍符合 button-class 窄判準");
 	assert.equal(resegs[0].source, "送出", "應以新節點的原文重新採集（非殘留譯文）");
-	assert.equal(resegs[0].anchor.block, fresh);
+	assert.ok(resegs[0].anchor.block === fresh, "anchor.block 應為重渲染後的新節點");
 });
 
 test("KO-7 標記被直接清除（同節點）同樣視為未譯：classifyNode 純看屬性、不看節點身分", () => {
@@ -208,5 +210,5 @@ test("KO-7 標記被直接清除（同節點）同樣視為未譯：classifyNode
 	const resegs = collect(doc);
 	assert.equal(resegs.length, 1, "標記消失後應重新產生一個待譯段（純屬性檢查、非節點身分快取）");
 	assert.equal(resegs[0].state, koine.SegmentState.PENDING);
-	assert.equal(resegs[0].anchor.block, btn);
+	assert.ok(resegs[0].anchor.block === btn, "anchor.block 應仍為同一節點");
 });

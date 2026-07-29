@@ -635,7 +635,7 @@ function* childNodes(node) {
 
 /**
  * 第一遍：標籤 + forceBlock 上傳 + 算 hasBlockDescendant + region landmark/hint 下行增量（§6.5）。
- * @param {Node} root
+ * @param {Element} root  同 collectSegments：必須是 Element
  * @param {CollectContext} ctx
  * @returns {WeakMap<Node, NodeLabel>}
  */
@@ -744,7 +744,7 @@ function isShallowBlock(el, cs) {
 
 /**
  * 第二遍：用 labels 組翻譯單位（consecutiveInline 累積、block 邊界 flush）。
- * @param {Node} root
+ * @param {Element} root  **必須是 Element**：Document / DocumentFragment 一律回 0 段（見尾端 root 閘）
  * @param {CollectContext} ctx
  * @param {{ walkId?: number }} [opts]
  * @returns {Segment[]}
@@ -929,14 +929,21 @@ function collectSegments(root, ctx, opts = {}) {
 	// 被靜默吃掉。生產路徑 root 恆為 `<body>`（且 BODY 在 §3.5 降級集合裡）故現況不變，
 	// 但以**元素**子樹為 root 呼叫（動態重採）時這是必要的。
 	//
-	// ⚠ 已知範圍限制：`root` 必須是 Element。傳 Document / DocumentFragment 一律回 0 段
-	// （`classifyNode` 對非元素回 SKIP_SUBTREE、此閘據以整棵不採）。這是**刻意不支援**、
-	// 不是忘了處理——容器當 root 有兩個尚未解的設計問題：①頁面級的剪枝豁免掛在 `<body>`
-	// 上（§3.5 把 BODY 放進降級集合正是為此），往上改以 `<html>` 為 choke point 會讓
-	// `<html lang="zh-TW">`／`<html class="notranslate">` 這類主流寫法整份文件歸零；
-	// ②容器頂層的裸文字與 inline 會讓 `anchor.block` 變成非 Element，`insertTranslations`
-	// 的 `block.after` 與 `observeSegments` 的 `observe(block)` 都只吃 Element，譯文會靜默
-	// 丟失。要支援容器 root 得先把這兩題解掉，屬另案。
+	// ⚠ 範圍限制：`root` 必須是 Element。傳 Document / DocumentFragment 一律回 0 段
+	// （`classifyNode` 對非元素回 SKIP_SUBTREE、此閘據以整棵不採）。
+	//
+	// **這是相對本閘加入前的刻意收窄，不是「維持原狀」。** 逐 commit 實測：加閘前這兩種 root
+	// 確實「採得到段」——但那是**意外**而非支援：`collect(root)` 無條件執行，子代因 root 早退
+	// 而不在 `labels` 裡，於是全落 `classifyLabel` 防禦路徑被重判成 WALK。那條路徑產出的段
+	// `anchor.block` 會是 Document／DocumentFragment（非 Element），而 `insertTranslations` 的
+	// `block.after` 與 `observeSegments` 的 `observe(block)` 都只吃 Element ⇒ 段已送翻、譯文
+	// 靜默丟失。「能跑」與「可用」在此不是同一件事。
+	//
+	// 要真正支援容器 root，得先解掉兩個**既有**風險（兩者在本閘加入前就存在、非本閘造成）：
+	// ①頁面級的剪枝豁免掛在 `<body>` 上（§3.5 把 BODY 放進降級集合正是為此），choke point 一旦
+	// 往上移到 `<html>`，`<html lang="zh-TW">`／`<html class="notranslate">` 這類主流寫法會讓整份
+	// 文件歸零——同一份 HTML 走 body-root 正常、走 document-root 零段；②非 Element anchor 的
+	// 下游處置（見上）。屬另案。
 	if (labelOf(root).disp === "WALK") collect(root);
 	return segments;
 }
@@ -1037,7 +1044,14 @@ function insertTranslations(segments, opts = {}) {
 	for (const seg of segments) {
 		if (seg.state !== SegmentState.DRAFTED) continue; // 只消費 drafted（pending / skipped 跳過）
 		const text = seg.refined ?? seg.draft;            // §9.1 並列取值 refined ?? draft
-		if (text == null || text === "") continue;        // 無譯文 / 譯文=空 不插
+		// 型別守衛不可省，且**替 replace 分支擋的比 after-segment 更要緊**：非字串的 text 會被
+		// `block.textContent = text` 寫成 "[object Object]"，同時 `data-koine-translated` 被設上
+		// → classifyNode [1] 之後每次採集都整棵跳過，**永遠不會自癒**，而原文只剩在
+		// `data-koine-original`（還原路徑尚未實作）。同一個壞值走 after-segment 只是多一個垃圾
+		// wrapper、原文完好。`seg.refined` 目前全 repo 無寫入端（§9.1 給 v2／外部的預留欄），
+		// `Segment` typedef 也沒宣告 draft／refined、tsc 抓不到壞的寫入端。
+		// `typeof` 一併涵蓋 null／undefined（`typeof null === "object"`）。
+		if (typeof text !== "string" || text === "") continue; // 無譯文 / 譯文=空 / 型別不對 不插
 		const block = seg.anchor && seg.anchor.block;
 		if (!block) continue;
 
@@ -1062,7 +1076,9 @@ function insertTranslations(segments, opts = {}) {
 			// KO-7 原文存 data 屬性（純資料、無 AT 影響）。這裡刻意存**未過濾的 snapshot**、不是
 			// seg.source——它是還原用的逐字副本，連原始空白一起留住才還原得回去。
 			// ⚠ 給未來寫還原路徑的人：要還原一律讀 `data-koine-original`（逐字），**不要讀 `title`**
-			// ——後者是 normalize 後的展示字串、且長度超標時根本不存在。
+			// ——三個理由，最後一個最危險：①它是 normalize 後的展示字串；②長度超標時根本不存在；
+			// ③元素本來就有 `title` 時下面的守衛會**刻意保留站台自己的字串**，於是 `title` 會是一個
+			// 「長得很像原文」的錯字串。前兩者的失敗看得見（讀到空的），第三者會靜默寫錯回頁面。
 			block.setAttribute("data-koine-original", snapshot);
 			// KO-6 原文存 title tooltip，但兩個前提：①元素本來沒有 `title`——覆寫會抹掉站台自己的
 			// 提示且無還原路徑；②原文短到適合當 tooltip（見 REPLACE_TITLE_MAX_CHARS）。

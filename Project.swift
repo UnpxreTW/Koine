@@ -108,12 +108,14 @@ let project = Project(
 			bundleId: "me.unpxre.koine.domtests",
 			deploymentTargets: .macOS("26.0"),
 			// KoineCLI 是 .commandLineTool（可執行檔），無法以 target dependency 連結進測試 bundle
-			// （連結器找不到符號）——InputResolver／RuntimeError 直接把原始檔納入本 target 編譯，
-			// 與 KoineCLI 各自獨立編譯一份，非共用二進位。
+			// （連結器找不到符號）——InputResolver／RuntimeError／KoineCLI 直接把原始檔納入本
+			// target 編譯，與 KoineCLI target 各自獨立編譯一份，非共用二進位。
+			// Sources/CLI/Entry.swift 刻意不列入：`@main` 進測試 bundle 會多出一個進入點。
 			sources: [
 				"Tests/KoineDOMTests/**/*.swift",
 				"Sources/CLI/InputResolver.swift",
 				"Sources/CLI/RuntimeError.swift",
+				"Sources/CLI/KoineCLI.swift",
 			],
 			dependencies: [
 				.target(name: "Koine"),

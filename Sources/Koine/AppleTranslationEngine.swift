@@ -48,6 +48,20 @@ public struct AppleTranslationEngine: TranslationEngine {
 		return result
 	}
 
+	/// 本機 Apple Translation 支援的語言代碼（BCP-47 `minimalIdentifier`、去重後字典序）。
+	///
+	/// 供可發現性用途（CLI 列表、shell 補全），**不是翻譯前的前提檢查**——「支援」只代表
+	/// Apple 認得這個語言，語言包裝了沒仍由 `status(from:to:)` 判定。兩者混用會把
+	/// 「支援但未下載」誤讀成可直接翻譯。
+	///
+	/// 回傳 `minimalIdentifier` 而非 `maximalIdentifier`：前者（`ja`、`zh-TW`、`en-GB`）是
+	/// 呼叫端能原樣填回 `--from` / `--to` 的形式，後者（`ja-Jpan-JP`）補全了書寫系統與地區、
+	/// 讀起來像另一組代碼。排序固定讓輸出可 diff、可比 golden。
+	public func supportedLanguages() async -> [String] {
+		let identifiers = await LanguageAvailability().supportedLanguages.map(\.minimalIdentifier)
+		return Set(identifiers).sorted()
+	}
+
 	/// 委派進程級 `TranslationSessionPool` 以複用 session（每句重建實測多耗約 50ms）。
 	public func translate(
 		_ text: String,

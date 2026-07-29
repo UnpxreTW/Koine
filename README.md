@@ -22,6 +22,26 @@ Apple 原生 on-device 翻譯 Safari Web Extension。
 
 PoC 階段，核心翻譯路徑驗證中。
 
+## 命令列工具 `koine`
+
+擴充之外另有一支 macOS 命令列前端，與擴充共用同一條翻譯引擎路徑：
+
+```bash
+koine "Hello, world"              # 譯文走 stdout
+echo "Hello, world" | koine       # 也吃 stdin
+koine --json "Hello" --to ja      # 結構化輸出：source / target / text
+koine --list-languages            # 本機支援的 BCP-47 語言代碼
+```
+
+語言包須先於「系統設定 → 一般 → 語言與地區 → 翻譯語言」下載；未下載時工具會回可行動的提示，不自動下載、不回退雲端。
+
+給自動化流程串接的兩個自省口（ArgumentParser 內建、不需額外安裝）：
+
+```bash
+koine --experimental-dump-help            # 完整介面 JSON（參數、預設值、說明）
+koine --generate-completion-script zsh    # shell 補全腳本；--to / --from 會即時補語言代碼
+```
+
 ## 開發
 
 專案用 [Tuist](https://tuist.dev) 生成，需要 Xcode 26+（iOS 26 SDK）：

@@ -1,0 +1,32 @@
+OVERVIEW: 雅言 — Apple Translation 的命令列前端（on-device、零成本）。
+
+從位置參數或 stdin 讀取文字，翻譯後將譯文輸出到 stdout；診斷與錯誤走 stderr。
+互動終端機下未給位置參數會直接報錯，不會靜默等待輸入。
+
+範例：
+  koine "Hello, world"
+  echo "Hello, world" | koine
+  koine --json "Hello" --to ja
+  koine --list-languages
+
+語言代碼採 BCP-47。`--list-languages` 列出本機支援的代碼；帶書寫系統的寫法
+（如 zh-Hant）同樣接受。支援不等於可用——語言包須先於「系統設定 → 一般 →
+語言與地區 → 翻譯語言」下載，未下載時本工具會回可行動的提示、不會自動下載。
+
+--json 的輸出：翻譯時為物件，三鍵 source / target / text；
+搭配 --list-languages 時為物件，單鍵 languages（代碼字串陣列）。
+
+介面自省：`koine --experimental-dump-help` 輸出完整介面 JSON、
+`koine --generate-completion-script zsh` 產 shell 補全腳本。
+
+USAGE: koine [<text>] [--to <to>] [--from <from>] [--json] [--list-languages]
+
+ARGUMENTS:
+  <text>                  要翻譯的文字；省略則從 stdin 讀取。
+
+OPTIONS:
+  -t, --to <to>           目標語言（BCP-47），預設 zh-Hant。 (default: zh-Hant)
+  -f, --from <from>       來源語言（BCP-47），預設 en。 (default: en)
+  --json                  以 JSON 輸出（含來源 / 目標語言 / 譯文）。
+  --list-languages        列出本機支援的語言代碼後結束，不翻譯。
+  -h, --help              Show help information.

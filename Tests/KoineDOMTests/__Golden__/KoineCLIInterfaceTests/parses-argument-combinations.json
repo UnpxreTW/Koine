@@ -1,0 +1,38 @@
+[
+  {
+    "arguments" : "",
+    "outcome" : "text=<nil> from=en to=zh-Hant json=false listLanguages=false"
+  },
+  {
+    "arguments" : "Hello, world",
+    "outcome" : "text=Hello, world from=en to=zh-Hant json=false listLanguages=false"
+  },
+  {
+    "arguments" : "--to ja Hello",
+    "outcome" : "text=Hello from=en to=ja json=false listLanguages=false"
+  },
+  {
+    "arguments" : "-t ja -f de Hallo",
+    "outcome" : "text=Hallo from=de to=ja json=false listLanguages=false"
+  },
+  {
+    "arguments" : "--json Hello",
+    "outcome" : "text=Hello from=en to=zh-Hant json=true listLanguages=false"
+  },
+  {
+    "arguments" : "--list-languages",
+    "outcome" : "text=<nil> from=en to=zh-Hant json=false listLanguages=true"
+  },
+  {
+    "arguments" : "--list-languages --json",
+    "outcome" : "text=<nil> from=en to=zh-Hant json=true listLanguages=true"
+  },
+  {
+    "arguments" : "--unknown-flag",
+    "outcome" : "failure: Unknown option '--unknown-flag'"
+  },
+  {
+    "arguments" : "--to",
+    "outcome" : "failure: Missing value for '--to <to>'"
+  }
+]

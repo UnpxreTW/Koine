@@ -935,35 +935,28 @@ function collectSegments(root, ctx, opts = {}) {
 	// ⚠ 範圍限制：`root` 必須是 Element。傳 Document / DocumentFragment 一律回 0 段
 	// （`classifyNode` 對非元素回 SKIP_SUBTREE、此閘據以整棵不採）。
 	//
-	// **這是相對本閘加入前的刻意收窄，不是「維持原狀」。** 逐 commit 實測：加閘前這兩種 root
-	// 採得到段，而且**頂層是 block 元素時整條管線是通的**——段在該 block 上成形（`anchor.block`
-	// 是 Element）、譯文確實插得回去。收窄的理由不是「完全不能用」，是**同一支 API 兩種結果**：
-	// 容器頂層直接掛裸文字或 inline 時，段在容器上成形、`anchor.block` 就是容器本身（非
-	// Element）。後果依段數而異、**不是同時發生**：`observeSegments` 在 `insertTranslations`
-	// 之前跑，而容器 anchor 的段一律被 `regionOfBlock` 判成 MAIN、吃得到 `EAGER_MAIN_BUDGET`
-	// （＝10）的載入即發預算——**這類段 ≤10 個時根本走不到 `obs.observe(block)`**，只會在插回
-	// 時因 `block.after` 不存在而靜默 `continue`（段已送翻、譯文丟失無警訊）；超過預算的段才
-	// 走到 `observe(block)`，在真 IntersectionObserver 下丟 TypeError（WebIDL 簽名收 `Element`）
-	// 並中止整條管線，此時連 `insertTranslations` 都輪不到。實測門檻恰在 10／11 之間。
-	// `<template>.content` 與 `range.cloneContents()` 頂層帶裸文字正是常態，而且通常是個位數
-	// 節點——也就是落在「靜默丟失」那一側。
-	// 把「部分可用、行為不一致」換成「明確不支援」，比留著一個看運氣的入口好。
-	//
-	// 精確範圍：上述「兩種結果」只在 **DocumentFragment** 那腿成立——DOM 規範不允許 Document
-	// 直接掛 Text 子節點（`document.appendChild(textNode)` 丟 HierarchyRequestError），Document
-	// 頂層只可能是 Element／DocumentType／Comment／PI，anchor 恆為 Element。Document root 真正
-	// 的風險是下面列的①。
+	// **這是相對本閘加入前的刻意收窄，不是「維持原狀」。** 加閘前這兩種 root 採得到段，
+	// 但那條路的產出**不一致**：容器頂層若是 block 元素，段在該 block 上成形（`anchor.block`
+	// 是 Element）、整條管線是通的；容器頂層若直接掛裸文字或 inline，段就在容器上成形、
+	// `anchor.block` 是容器本身（非 Element）。而下游兩個 consumer 都只吃 Element——
+	// `insertTranslations` 的 `block.after` 不存在時靜默 `continue`（段已送翻、譯文丟失無警訊），
+	// `observeSegments` 的 `obs.observe(block)` 在真 IntersectionObserver 下丟 TypeError
+	// （WebIDL 簽名收 `Element`）。**兩者實際落哪一個，取決於該段有沒有被 §10.1 的 eager 預算
+	// 涵蓋而免於觀察**（`observeSegments` 跑在 `insertTranslations` 之前，丟出就整條管線中止）
+	// ——即同一份輸入的結果會隨段的文件序落點而變。`<template>.content` 與
+	// `range.cloneContents()` 頂層帶裸文字正是常態形狀。把「部分可用、行為隨落點而變」換成
+	// 「明確不支援」，比留著一個看運氣的入口好。
 	//
 	// （順帶更正兩個容易寫錯的因果，逐項實測過：①子代不在 `labels` **不等於**剪枝失效——
 	// 它們改走 `classifyLabel` 重算、`disp` 原樣保留，document root 下 `<head>`／`<script>`／
 	// `hidden` 全都照跳。②**lang 與 region 也沒掉**：兩者各有等價回退（`regionOfBlock` 對未進
 	// labels 者跑完整 walk-up cascade、`decideInsertMode` 對未進 labels 者改呼 `effectiveLangOf`），
-	// 實測 doc-root 與 body-root 的 region 與 insertMode 逐項相同。
-	// 真正掉的是**兩件與「子代結構」有關的事**，因為 `classifyLabel` 只算 `isShallowBlock`、
-	// 沒有子代資訊：`isBlock` 少了 `hasBlockChild` 上傳 ⇒ §2.5 混排 flush 分支失效（實測
-	// `<span>裸字 <p>block 子</p> 裸字</span>` 由 3 段垮成 1 段、anchor 落到 `<body>`、block
-	// 子代文字被整個吞進同一段）；`hasBlockDescendant` 保守判 true ⇒ button-class 窄判準永遠
-	// 不命中。再加上 root 自身的處置被吃掉——後者正是本閘要補的。）
+	// 實測 doc-root 與 body-root 的 region 逐項相同。真正掉的是**兩件與「子代結構」有關的事**，
+	// 因為 `classifyLabel` 只算 `isShallowBlock`、沒有子代資訊：`isBlock` 少了 `hasBlockChild`
+	// 上傳 ⇒ §2.5 混排 flush 分支失效（實測 `<span>裸字 <p>block 子</p> 裸字</span>` 由 3 段垮成
+	// 1 段、anchor 落到 `<body>`、block 子代文字被整個吞進同一段）；`hasBlockDescendant` 保守判
+	// true ⇒ button-class 窄判準永遠不命中，該段的 `insertMode` 因此也跟著不同。再加上 root
+	// 自身的處置被吃掉——後者正是本閘要補的。）
 	//
 	// 要真正支援容器 root，得先解掉兩個**既有**風險（兩者在本閘加入前就存在、非本閘造成）：
 	// ①頁面級的剪枝豁免掛在 `<body>` 上（§3.5 把 BODY 放進降級集合正是為此），choke point 一旦

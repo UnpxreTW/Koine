@@ -35,7 +35,14 @@ function captureWarn(fn) {
 	/** @type {any[][]} */
 	const calls = [];
 	console.warn = (...args) => { calls.push(args); };
-	try { fn(); } finally { console.warn = original; }
+	try {
+		const r = fn();
+		// 擋 async：非同步 fn 會在 promise settle 前就還原並回空陣列，配上「不得出聲」類斷言
+		// （assert.deepEqual(warns, [])）就是靜默假綠——而那正是這個 helper 最該擋住的誤用。
+		if (r && typeof r.then === "function") throw new TypeError("captureWarn 只收同步 fn");
+	} finally {
+		console.warn = original;
+	}
 	return calls;
 }
 
@@ -265,14 +272,10 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 	// 而且**頂層是 block 元素時整條管線是通的**（段在該 block 上成形、anchor.block 是 Element、
 	// 譯文真的插得回去）。收窄的理由不是「完全不能用」，是**同一支 API 兩種結果**：容器頂層
 	// 直接掛裸文字或 inline 時，段在容器上成形、anchor.block 就是容器本身（非 Element），
-	// insertTranslations 的 block.after 不存在而靜默跳過（段已送翻、譯文丟失無警訊）。
-	// 這類段一律被判 MAIN、吃得到 EAGER_MAIN_BUDGET（=10）的載入即發預算，所以 ≤10 個時
-	// 走不到 observe(block)；超過才會在真 IntersectionObserver 下丟 TypeError 並中止整條管線
-	// （實測門檻恰在 10／11 之間）。<template>.content 與 range.cloneContents() 頂層帶裸文字
-	// 正是常態，且通常是個位數節點——落在「靜默丟失」那一側。
-	//
-	// 這條「兩種結果」只在 DocumentFragment 那腿成立：DOM 規範不允許 Document 直接掛 Text
-	// 子節點，Document 頂層的 anchor 恆為 Element；Document root 真正的風險是下面的①。
+	// insertTranslations 的 block.after 不存在而靜默跳過（段已送翻、譯文丟失無警訊），
+	// 或 observeSegments 的 observe(block) 在真 IntersectionObserver 下丟 TypeError 並中止整條
+	// 管線——落哪一個取決於該段有沒有被 eager 預算涵蓋而免於觀察，也就是隨段的文件序落點而變。
+	// <template>.content 與 range.cloneContents() 頂層帶裸文字正是常態形狀。
 	//
 	// 要真正支援容器 root，得先解掉兩個既有風險（兩者在 root 閘之前就存在）：①頁面級剪枝
 	// 豁免掛在 <body> 上，choke point 往上移到 <html> 會讓 <html lang="zh-TW"> 這類主流寫法

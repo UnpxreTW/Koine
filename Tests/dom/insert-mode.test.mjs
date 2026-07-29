@@ -168,7 +168,7 @@ test('lang="" ＝語言未知、不繼承祖先（HTML 規範）：簡中頁內�
 	assert.equal(collectWith(ctrl)[0].anchor.insertMode, "replace");
 });
 
-test('兩條語言查詢路徑對 lang="" 必須給同一個答案（下行增量 vs closest 防禦路徑）', () => {
+test('lang="" 在兩條語言查詢路徑上答案一致（下行增量 vs closest 防禦路徑；shadow 邊界的既有落差不在此測）', () => {
 	// 採集路徑讀 NodeLabel.lang（下行增量）、防禦路徑走 effectiveLangOf(closest)。兩者分歧
 	// 時，未進 labels 的節點（動態重採、離線片段）會走到與採集期相反的判定。
 	const doc = docFrom(`<div lang=""><p id="p">这是简体中文段落内容。</p></div>`, ` lang="zh-CN"`);
@@ -197,21 +197,30 @@ test("縮排排版的按鈕仍寫 title：長度閘比的是 normalize 後的 so
 	);
 });
 
-test("Document / DocumentFragment 為 root：容器不擋子代（以子樹為 root 呼叫的典型場景）", () => {
+test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻意不支援、非疏漏）", () => {
+	// 這條釘的是**範圍限制本身**，不是「容器擋住子代」這個 bug。曾經改成支援容器 root，
+	// 但那會開出兩個更糟的洞：①頁面級剪枝豁免掛在 <body> 上（§3.5 把 BODY 放進降級集合
+	// 正是為此），choke point 往上移到 <html> 之後，<html lang="zh-TW"> 這類主流寫法會讓
+	// 整份文件歸零——同一份 HTML 走 body-root 正常、走 document-root 零段；②容器頂層的
+	// 裸文字與 inline 會讓 anchor.block 變成非 Element，insertTranslations 與 observeSegments
+	// 都只吃 Element，譯文會靜默丟失（段已送翻、成本已付）。兩題都要各自的設計，屬另案。
+	//
+	// 哪天真的支援了，本測試會紅——那時該連同這段說明一起改寫，而不是默默放寬。
 	const doc = docFrom(`<p>Hello there friend.</p>`);
 	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false });
-	assert.ok(
-		koine.collectSegments(doc, ctx, { walkId: 1 }).length >= 1,
-		"以 document 為 root 應採得到段",
-	);
+	assert.equal(koine.collectSegments(doc, ctx, { walkId: 1 }).length, 0, "Document 為 root 回 0 段");
 
 	const frag = doc.createDocumentFragment();
 	const p = doc.createElement("p");
 	p.textContent = "Fragment paragraph here.";
 	frag.appendChild(p);
-	const segs = koine.collectSegments(frag, ctx, { walkId: 1 });
-	assert.equal(segs.length, 1, "以 DocumentFragment 為 root 應採得到段");
-	assert.equal(segs[0].source, "Fragment paragraph here.");
+	assert.equal(koine.collectSegments(frag, ctx, { walkId: 1 }).length, 0, "DocumentFragment 為 root 回 0 段");
+
+	// 對照：同樣的內容以 Element 為 root 採得到——證明上面 0 段是 root 型別限制，不是採集壞了。
+	const host = doc.createElement("div");
+	host.appendChild(doc.createElement("p"));
+	host.firstChild.textContent = "Element root works fine.";
+	assert.equal(koine.collectSegments(host, ctx, { walkId: 1 }).length, 1, "Element 為 root 正常採集");
 });
 
 // ---------------------------------------------------------------------------

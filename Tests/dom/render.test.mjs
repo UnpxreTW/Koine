@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { koine, loadFixture, collect, normalize } from "./helpers.mjs";
+import { koine, loadFixture, collect, normalize, assertSame } from "./helpers.mjs";
 
 // 涵蓋 basic / mixed-inline / nested / list-items / inline 收尾（驗 block 落點）。
 const RENDER_FIXTURES = [
@@ -38,7 +38,7 @@ function assertWrapper(doc, seg) {
 	assert.ok(wrapper.classList.contains("koine-translated"), "wrapper 缺 koine-translated class");
 	assert.equal(wrapper.getAttribute("data-koine-id"), seg.id, "data-koine-id 不符 seg.id");
 	assert.equal(wrapper.textContent, seg.draft, "wrapper 文字 ≠ 假譯文");
-	assert.ok(seg.anchor.block.nextSibling === wrapper, "wrapper 不在原文 block 緊鄰之後");
+	assertSame(seg.anchor.block.nextSibling, wrapper, "wrapper 不在原文 block 緊鄰之後");
 }
 
 for (const name of RENDER_FIXTURES) {
@@ -61,7 +61,7 @@ test("render block 落點 — inline 收尾段 anchor 落 block 容器、非 inl
 	koine.insertTranslations(segs);
 	const wrapper = doc.querySelector(`[data-koine-id="${segs[0].id}"]`);
 	assert.equal(wrapper.parentNode.tagName, "BODY", "wrapper 應插在 p 同層（body），非 span 內");
-	assert.ok(doc.querySelector("p").nextSibling === wrapper, "wrapper 應緊鄰 p 之後");
+	assertSame(doc.querySelector("p").nextSibling, wrapper, "wrapper 應緊鄰 p 之後");
 });
 
 test("render 只消費 drafted：skipped 段不插（state 閘、非看 draft 有無）— 07-worth-numeric-skip", () => {
@@ -74,8 +74,8 @@ test("render 只消費 drafted：skipped 段不插（state 閘、非看 draft �
 	draftPending(segs);
 	const inserted = koine.insertTranslations(segs);
 	for (const s of skipped) {
-		assert.ok(
-			doc.querySelector(`[data-koine-id="${s.id}"]`) === null,
+		assertSame(
+			doc.querySelector(`[data-koine-id="${s.id}"]`), null,
 			`skipped 段 ${s.id} 不得有 wrapper（即使 draft 已填）`,
 		);
 	}

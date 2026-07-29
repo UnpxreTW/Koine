@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseHTML } from "linkedom";
-import { koine, stubGetStyle } from "./helpers.mjs";
+import { koine, stubGetStyle, assertSame } from "./helpers.mjs";
 
 function docFrom(bodyHtml, htmlAttrs = "") {
 	const { document } = parseHTML(`<!doctype html><html${htmlAttrs}><body>${bodyHtml}</body></html>`);
@@ -43,14 +43,14 @@ test("語言對軸：祖先標 lang=zh-CN 的純文字段 → insertMode=replace
 	const doc = docFrom(`<div lang="zh-CN"><p id="p">这是简体中文段落。</p></div>`);
 	const segs = collectWith(doc);
 	assert.equal(segs.length, 1);
-	assert.ok(segs[0].anchor.block === doc.getElementById("p"), "anchor.block 應為該 p");
+	assertSame(segs[0].anchor.block, doc.getElementById("p"), "anchor.block 應為該 p");
 	assert.equal(segs[0].anchor.insertMode, "replace", "簡中來源→繁中目標應就地取代、不並排");
 	assert.notEqual(segs[0].kind, "button", "語言對軸與段的種類軸互不冒充");
 	assert.equal(segs[0].meta.replaceSnapshot, "这是简体中文段落。", "replace 段須帶防呆快照");
 });
 
-test("語言對軸：元素自身 lang=zh-Hans 同樣命中（①自身 lang 優先）", () => {
-	const doc = docFrom(`<p id="p" lang="zh-Hans">简体段落。</p>`);
+test("語言對軸：元素自身 lang 勝過祖先 lang（自身 zh-Hans 在 lang=en 祖先底下仍命中）", () => {
+	const doc = docFrom(`<div lang="en"><p id="p" lang="zh-Hans">简体段落。</p></div>`);
 	assert.equal(collectWith(doc)[0].anchor.insertMode, "replace");
 });
 
@@ -75,12 +75,79 @@ test("繁中來源不觸發 replace（lang=zh-Hant 整棵跳，本就不產段�
 	assert.equal(collectWith(doc).length, 0, "繁中來源本就整棵跳、不產段");
 });
 
-test("②區塊文字內容偵測尚未實作：無任何 lang 標記的簡中文字保守走並列", () => {
-	// SPEC §13 #11（逐區塊語言判定）的門檻值／偵測方式／是否引入偵測相依三子題尚未裁定，
-	// 故 effectiveLangOf 查不到 lang 就回 null、不猜。此測試是那條界線的釘子：
-	// 哪天②落地、本測試會紅，屆時要連同這段說明一起改，而不是默默放寬。
+test("依內容偵測語言尚未實作：整條祖先鏈都沒有 lang 時保守走並列", () => {
+	// 語言判定目前只讀 lang 屬性（自身 → 祖先 → 頁面）。查不到就回 null、不從文字去猜。
+	// 這條是那個界線的釘子：哪天加了內容偵測、本測試會紅，屆時應連同這段說明一起改，
+	// 而不是默默放寬——就地取代是破壞性的，放寬前要先確定偵測夠準。
 	const doc = docFrom(`<p id="p">这是没有任何语言标记的简体段落。</p>`);
 	assert.equal(collectWith(doc)[0].anchor.insertMode, "after-segment");
+});
+
+// ---------------------------------------------------------------------------
+// 破壞性防護：replace 會讓原文從頁面消失，觸發條件必須窄
+// ---------------------------------------------------------------------------
+
+test("簡中頁上未標 lang 的英文段不得就地取代（頁面級回退會把整頁都套進語言對）", () => {
+	// `<html lang="zh-CN">` 對頁內每一個未標 lang 的段都成立——包含英文留言區、英文導覽。
+	// 「簡繁字面幾乎相同、並排只是重複」這個理由對它們完全不成立，而 replace 會讓英文原文
+	// 從頁面上消失（只剩 data 屬性）。故語言對軸另要求段自身的文字真的是漢字。
+	const doc = docFrom(`<p id="p">Subscribe to our newsletter for weekly updates.</p>`, ` lang="zh-CN"`);
+	const segs = collectWith(doc);
+	assert.equal(segs[0].anchor.insertMode, "after-segment", "英文段必須走並列、不得就地取代");
+
+	draftPending(segs);
+	koine.insertTranslations(segs);
+	assert.equal(
+		doc.getElementById("p").textContent, "Subscribe to our newsletter for weekly updates.",
+		"英文原文必須原封不動留在頁面上",
+	);
+});
+
+test("簡中頁上的日文／韓文段同樣不得就地取代（漢字閘另排除假名與諺文）", () => {
+	const doc = docFrom(
+		`<p id="ja">日本語のコメント欄です。</p><p id="ko">한국어 댓글입니다.</p>`,
+		` lang="zh-CN"`,
+	);
+	const byId = Object.fromEntries(collectWith(doc).map((x) => [x.anchor.block.id, x]));
+	assert.equal(byId.ja.anchor.insertMode, "after-segment", "含假名的段不得就地取代");
+	assert.equal(byId.ko.anchor.insertMode, "after-segment", "含諺文的段不得就地取代");
+});
+
+test("②軸不得撿走①軸刻意退回的長按鈕（長度閘是按鈕排版的約束、不是語言的約束）", () => {
+	const long = "这是一段超过二十个字的很长很长很长的按钮文字内容喔喔喔";
+	const doc = docFrom(`<button id="b">${long}</button>`, ` lang="zh-CN"`);
+	const segs = collectWith(doc);
+	assert.notEqual(segs[0].kind, "button", "超過長度閘不應命中 button-class 窄判準");
+	assert.equal(segs[0].anchor.insertMode, "after-segment", "②軸不得繞過①軸的長度閘");
+});
+
+test("replace 不覆寫元素既有的 title（站台自己的提示不可被抹掉、且無還原路徑）", () => {
+	const doc = docFrom(`<div lang="zh-CN"><p id="p" title="站台原有提示">简体段落内容。</p></div>`);
+	const segs = draftPending(collectWith(doc));
+	koine.insertTranslations(segs);
+	const p = doc.getElementById("p");
+	assert.equal(p.getAttribute("title"), "站台原有提示", "既有 title 必須保留");
+	assert.equal(p.getAttribute("data-koine-original"), "简体段落内容。", "原文仍存 data 屬性");
+	assert.equal(p.textContent, segs[0].draft, "換字本身照做");
+});
+
+test("過長的原文不寫進 title（整段 tooltip 會被輔助技術當可及描述唸出）", () => {
+	const long = "这是一段很长的简体中文段落内容用来测试标题属性的长度上限行为是否正确。";
+	assert.ok(long.length > koine.REPLACE_TITLE_MAX_CHARS, "前提：測試字串需超過上限");
+	const doc = docFrom(`<div lang="zh-CN"><p id="p">${long}</p></div>`);
+	const segs = draftPending(collectWith(doc));
+	koine.insertTranslations(segs);
+	const p = doc.getElementById("p");
+	assert.ok(!p.hasAttribute("title"), "超過上限不寫 title");
+	assert.equal(p.getAttribute("data-koine-original"), long, "原文仍完整存在 data 屬性");
+	assert.equal(p.textContent, segs[0].draft);
+});
+
+test("短原文仍寫 title（按鈕軸的既有行為不因新規則改變）", () => {
+	const doc = docFrom(`<div lang="zh-CN"><p id="p">简体短句。</p></div>`);
+	const segs = draftPending(collectWith(doc));
+	koine.insertTranslations(segs);
+	assert.equal(doc.getElementById("p").getAttribute("title"), "简体短句。");
 });
 
 // ---------------------------------------------------------------------------
@@ -114,7 +181,7 @@ test("render 分派只看 anchor.insertMode：簡中段原地換字、行為與 
 	const p = doc.getElementById("p");
 
 	assert.equal(inserted.length, 1);
-	assert.ok(inserted[0] === p, "replace 應回傳原元素本身、非新建 wrapper");
+	assertSame(inserted[0], p, "replace 應回傳原元素本身、非新建 wrapper");
 	assert.equal(p.textContent, segs[0].draft, "textContent 應換成譯文");
 	assert.equal(p.getAttribute("title"), "这是简体中文段落。", "原文應存 title");
 	assert.equal(p.getAttribute("data-koine-original"), "这是简体中文段落。", "原文應存 data-koine-original");
@@ -160,7 +227,7 @@ test("自吞防護：replace 過的簡中段再次採集整棵跳過、不產生
 // ---------------------------------------------------------------------------
 
 test("isTraditionalChineseTarget 語碼邊界", () => {
-	for (const t of ["zh", "zh-Hant", "zh-TW", "zh-hant-hk"]) {
+	for (const t of ["zh", "zh-Hant", "zh-TW", "zh-hant-hk", "zh-HK", "zh-MO"]) {
 		assert.equal(koine.isTraditionalChineseTarget(t), true, `${t} 應判為繁中目標`);
 	}
 	for (const t of ["zh-CN", "zh-Hans", "en", "ja", "", undefined]) {
@@ -177,15 +244,17 @@ test("effectiveLangOf：自身優先於祖先、查無回 null", () => {
 	assert.equal(koine.effectiveLangOf(bare.getElementById("p")), null, "整條祖先鏈無 lang 應回 null");
 });
 
-test("isSimplifiedToTraditional：簡中語碼變體全命中、其餘不命中", () => {
-	const doc = docFrom(`<p id="p">x</p>`);
-	const p = doc.getElementById("p");
-	for (const lang of ["zh-CN", "zh-Hans", "zh-Hans-CN"]) {
-		p.setAttribute("lang", lang);
-		assert.equal(koine.isSimplifiedToTraditional(p, "zh-Hant"), true, `${lang} 應命中`);
+test("isSimplifiedChinese：簡中語碼變體全命中、其餘不命中", () => {
+	for (const lang of ["zh-cn", "zh-hans", "zh-hans-cn"]) {
+		assert.equal(koine.isSimplifiedChinese(lang), true, `${lang} 應命中`);
 	}
-	for (const lang of ["zh-TW", "zh-Hant", "en", "ja"]) {
-		p.setAttribute("lang", lang);
-		assert.equal(koine.isSimplifiedToTraditional(p, "zh-Hant"), false, `${lang} 不應命中`);
+	for (const lang of ["zh-tw", "zh-hant", "zh", "en", "ja", null, undefined, ""]) {
+		assert.equal(koine.isSimplifiedChinese(lang), false, `${lang} 不應命中`);
 	}
+});
+
+test("ownLangOf：只讀自身屬性、已小寫 trim、無屬性回 null", () => {
+	const doc = docFrom(`<div lang="ZH-CN "><p id="p">x</p></div>`);
+	assert.equal(koine.ownLangOf(doc.querySelector("div")), "zh-cn");
+	assert.equal(koine.ownLangOf(doc.getElementById("p")), null, "自身無 lang 不吃祖先");
 });

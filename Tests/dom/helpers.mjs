@@ -4,6 +4,7 @@
 // 跑道 A 測試輔助：載入 content.js（universal script → globalThis.__koine__）、
 // linkedom 建 DOM、stub getStyle（display 由 data-d 屬性或 tag 預設、不靠真 computed style）。
 
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -66,4 +67,13 @@ export function normalize(segments) {
 		if (s.meta?.protectedSpans) o.protectedSpans = s.meta.protectedSpans;
 		return o;
 	});
+}
+
+/**
+ * 節點身分斷言。**不要對 live DOM 節點用 `assert.equal`**：strict 模式失敗時會對兩個節點產生
+ * 結構 diff，linkedom 的節點互相指涉、整個測試檔會卡住上百秒——紅燈會表現成 CI timeout、
+ * 比錯誤本身還難讀。`assert.ok` 只印訊息、不算 diff。
+ */
+export function assertSame(actual, expected, message) {
+	assert.ok(actual === expected, message);
 }

@@ -243,6 +243,78 @@ private let enterOrderBody = """
 	});
 	"""
 
+/// insertMode driver：採集 → 回每段的 (order, source, insertMode, kind)，供跑道 B 斷言插回模式。
+/// golden 通道刻意只留 order/source/state（丟 anchor），故語言對軸只能靠這支專用 driver 驗。
+private let insertModeDriverJS = """
+	(() => {
+	  const k = globalThis.__koine__;
+	  const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+	  const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
+	  return JSON.stringify(segs.map((s) => ({
+	    order: s.order, source: s.source,
+	    insertMode: s.anchor.insertMode, kind: s.kind || null,
+	  })));
+	})();
+	"""
+
+/// 語言對 replace 往返 driver：採集 → 塞假 draft → `insertTranslations` → 回插回後的 DOM 實況。
+private let langPairRenderBody = """
+	(() => {
+	  const k = globalThis.__koine__;
+	  const ctx = k.makeContext({ targetLang: 'zh-Hant' });
+	  const segs = k.collectSegments(document.body, ctx, { walkId: 1 });
+	  for (const s of segs) {
+	    if (s.state === k.SegmentState.PENDING) { s.draft = '譯:' + s.source; s.state = k.SegmentState.DRAFTED; }
+	  }
+	  k.insertTranslations(segs);
+	  const read = (id) => {
+	    const el = document.getElementById(id);
+	    return { text: el.textContent, translated: el.hasAttribute('data-koine-translated') };
+	  };
+	  return JSON.stringify({ zh: read('zh'), en: read('en') });
+	})();
+	"""
+
+// MARK: - InsertModeSeg
+
+/// insertMode driver 回傳形狀。
+private struct InsertModeSeg: Decodable {
+
+	/// 文件序連號。
+	let order: Int
+
+	/// 段落原文。
+	let source: String
+
+	/// 插回模式（`after-segment` / `replace`）。
+	let insertMode: String
+
+	/// 段的種類分類（`button` 或 nil）。
+	let kind: String?
+}
+
+// MARK: - LangPairRender
+
+/// 語言對 replace 往返回傳形狀：兩顆受測元素插回後的實況。
+private struct LangPairRender: Decodable {
+
+	/// 單一元素的插回後狀態。
+	struct ElementState: Decodable {
+
+		/// 插回後的 textContent。
+		let text: String
+
+		/// 是否帶 `data-koine-translated` 防自吞標記。
+		let translated: Bool
+	}
+
+	/// 簡中段（預期就地取代）。
+	let zh: ElementState
+
+	/// 英文段（預期並列、原文不動）。
+	let en: ElementState
+}
+
 // MARK: - NavDelegate
 
 /// `loadHTMLString` 完成回呼橋接（`navigationDelegate` 為 weak，呼叫端需保強參考至完成）。
@@ -353,6 +425,64 @@ private final class CollectWebKitTests {
 			rubyTextDisplay == "ruby-text",
 			"rt → ruby-text（真 WKWebView/系統 WebKit 實證；SPEC §1 A3 的 Playwright 值 inline 在系統 WebKit 不成立）"
 		)
+	}
+
+	/// `<body translate="no">` 降級：真 WebKit 下內文仍採得到。
+	///
+	/// 這條是 `el.translate` IDL 繼承回歸的偵測器。該 IDL 反映**繼承後**的值——祖先標了
+	/// `translate="no"`，子孫的 `el.translate` 全是 `false`；`respectsTranslateNo` 若改回讀
+	/// IDL，body 降級放行後子代仍會被判成 no 而整棵跳，整頁採不到段。linkedom 不實作該 IDL、
+	/// 跑道 A 永遠是綠的，只有這裡抓得到。
+	///
+	/// 原本擔這個角色的是 fixture `13-translate-no-bulk`（golden 期望 1 段），但降級門檻收緊為
+	/// 只有 BODY 之後，`<article translate="no">` 的正確輸出與 bug 輸出都是 0 段、分不出來；
+	/// 而 fixture 格式表達不了 body 屬性，故改在此處手搭 HTML。
+	@Test
+	private func `body level translate no still collects in real WebKit`() async throws {
+		let html = "<html translate=\"no\"><body translate=\"no\">"
+			+ "<p>Framework mislabel, still translated.</p>"
+			+ "<p>Second paragraph also translated.</p></body></html>"
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		await load(webView, html: html)
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+		let json = try await webView.evaluateJavaScript(driverJS) as? String ?? "[]"
+		let segs = try JSONDecoder().decode([NormSeg].self, from: Data(json.utf8))
+		#expect(segs.count == 2, "body 降級後內文應照常採集（讀 IDL 而非自身屬性會在此歸零）")
+		#expect(segs.map(\.source) == [
+			"Framework mislabel, still translated.",
+			"Second paragraph also translated.",
+		])
+	}
+
+	/// §9.2 語言對軸在真 WebKit：`<html lang="zh-CN">` 下，簡中段就地取代、同頁英文段並列。
+	///
+	/// 語言判定走祖先鏈（`walkAndLabel` 的 lang 下行增量），與 `el.translate` 同屬「繼承語義」
+	/// 那一類——正是跑道 A 的 DOM 模擬最容易與真引擎分歧的地方；且 golden 通道丟掉 anchor、
+	/// 載不動 `insertMode`，故另開這支 driver。
+	@Test
+	private func `insert mode language pair in real WebKit`() async throws {
+		let html = "<html lang=\"zh-CN\"><body>"
+			+ "<p id=\"zh\">这是简体中文段落内容。</p>"
+			+ "<p id=\"en\">An English comment in a simplified Chinese page.</p></body></html>"
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		await load(webView, html: html)
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+
+		let modeJSON = try await webView.evaluateJavaScript(insertModeDriverJS) as? String ?? "[]"
+		let segs = try JSONDecoder().decode([InsertModeSeg].self, from: Data(modeJSON.utf8))
+		#expect(segs.count == 2, "兩段皆應採到")
+		#expect(segs.first?.insertMode == "replace", "簡中段：語言對軸命中、就地取代")
+		#expect(segs.last?.insertMode == "after-segment", "同頁英文段：漢字安全閘擋下、走並列")
+
+		let renderJSON = try await webView.evaluateJavaScript(langPairRenderBody) as? String ?? "{}"
+		let render = try JSONDecoder().decode(LangPairRender.self, from: Data(renderJSON.utf8))
+		#expect(render.zh.text == "譯:这是简体中文段落内容。", "簡中段原地換字")
+		#expect(render.zh.translated, "簡中段應帶防自吞標記")
+		#expect(
+			render.en.text == "An English comment in a simplified Chinese page.",
+			"英文原文必須原封不動留在頁面上",
+		)
+		#expect(!render.en.translated, "英文段走並列、原元素不被標記")
 	}
 
 	/// 載入 HTML 並 await 導航完成（保留 delegate 強參考至完成）。

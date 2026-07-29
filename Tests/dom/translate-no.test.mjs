@@ -24,8 +24,8 @@ function dispOf(el) {
 }
 
 test("降級集合只留整站級 BODY：body 上的 translate=no 仍視為框架誤標、續走訪", () => {
-	// BODY 是 collectSegments 的預設 root，walkAndLabel 會分類 root 自身 —— 這條是實際生效的
-	// 降級路徑：拿掉 BODY，整站標 translate=no 的頁面會一段都採不到。
+	// BODY 是 collectSegments 的預設 root。collectSegments 有一道 root 閘（root 的 disp 非 WALK
+	// 就整棵不採），所以 BODY 留在降級集合裡是這條路徑成立的必要條件——見下一個測試的反向釘子。
 	const doc = docFrom(`<p>Framework mislabel, still translated.</p>`);
 	doc.body.setAttribute("translate", "no");
 	assert.equal(dispOf(doc.body), "WALK", "body 的 translate=no 應降級不尊重");
@@ -66,8 +66,26 @@ test("尊重範圍限於該子樹：article 標 no、兄弟段照常採集", () 
 	assert.equal(segs[0].source, "Translate me.");
 });
 
-test("translate 屬性只認 no：translate=\"yes\" 與空值不觸發跳過", () => {
-	const doc = docFrom(`<article id="y" translate="yes"><p>Yes please.</p></article>`);
-	assert.equal(dispOf(doc.getElementById("y")), "WALK");
-	assert.equal(collect(doc).length, 1);
+test("translate 屬性只認 no：translate=\"yes\" 與空值皆不觸發跳過", () => {
+	const doc = docFrom(`<article id="y" translate="yes"><p>Yes please.</p></article>`
+		+ `<article id="e" translate=""><p>Empty value.</p></article>`);
+	assert.equal(dispOf(doc.getElementById("y")), "WALK", 'translate="yes" 不應跳過');
+	assert.equal(dispOf(doc.getElementById("e")), "WALK", 'translate="" 不應跳過（只認字面 no）');
+	assert.equal(collect(doc).length, 2);
+});
+
+test("root 閘：root 自身即 SKIP_SUBTREE 時整棵不採（子代不落防禦路徑被重判成 WALK）", () => {
+	// collect(root) 不看 root 自己的 disp 的話，子代根本沒進 labels（visit 在 SKIP_SUBTREE root
+	// 即 return），會全落 classifyLabel 防禦路徑重判成 WALK——root 的處置被靜默吃掉。
+	// 生產路徑 root 恆為 body（且 BODY 在降級集合裡）故現況不變，但以子樹為 root 呼叫時要成立。
+	const doc = docFrom(`<article id="t" translate="no"><p>Skip the whole subtree.</p></article>`);
+	const ctx = koine.makeContext({ getStyle: stubGetStyle });
+	const article = doc.getElementById("t");
+	assert.equal(koine.classifyNode(article, ctx).disp, "SKIP_SUBTREE");
+	assert.equal(
+		koine.collectSegments(article, ctx, { walkId: 1 }).length, 0,
+		"以該 article 為 root 呼叫時應 0 段",
+	);
+	// 對照：同一棵樹以 body 為 root（body 未標 no）→ article 子樹被跳過、其餘照採。
+	assert.equal(collect(doc).length, 0, "以 body 為 root 時 article 子樹同樣被跳過");
 });

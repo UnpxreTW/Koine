@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseHTML } from "linkedom";
-import { koine, collect } from "./helpers.mjs";
+import { koine, collect, assertSame } from "./helpers.mjs";
 
 function docFrom(bodyHtml) {
 	const { document } = parseHTML(`<!doctype html><html><body>${bodyHtml}</body></html>`);
@@ -34,7 +34,7 @@ test("button-class 判準命中：BUTTON ≤20 字無 block 子 → segment.kind
 	const segs = collect(doc);
 	assert.equal(segs.length, 1);
 	assert.equal(segs[0].kind, "button");
-	assert.ok(segs[0].anchor.block === doc.getElementById("b"), "anchor.block 應為該 button");
+	assertSame(segs[0].anchor.block, doc.getElementById("b"), "anchor.block 應為該 button");
 	assert.equal(segs[0].anchor.insertMode, "replace", "button-class 應轉成 insertMode=replace（render 的唯一分派鍵）");
 });
 
@@ -109,12 +109,12 @@ test("replace 渲染：原地換字＋原文存 title/data-koine-original＋data
 	const btn = doc.getElementById("b");
 
 	assert.equal(inserted.length, 1);
-	assert.ok(inserted[0] === btn, "button-class 應回傳原元素本身，非新建 wrapper");
+	assertSame(inserted[0], btn, "button-class 應回傳原元素本身，非新建 wrapper");
 	assert.equal(btn.textContent, segs[0].draft, "textContent 應換成譯文");
 	assert.equal(btn.getAttribute("title"), "送出", "title 應存原文（KO-6）");
 	assert.equal(btn.getAttribute("data-koine-original"), "送出", "data-koine-original 應存原文（KO-7）");
 	assert.ok(btn.hasAttribute("data-koine-translated"), "缺 data-koine-translated 防自吞標記（KO-7）");
-	assert.equal(btn.nextSibling, null, "button-class 不應插入 wrapper sibling（KO-7 不加 wrapper）");
+	assertSame(btn.nextSibling, null, "button-class 不應插入 wrapper sibling（KO-7 不加 wrapper）");
 	assert.equal(doc.querySelectorAll(".koine-translated").length, 0, "不應出現 wrapper class 元素");
 });
 
@@ -195,7 +195,7 @@ test("KO-7 重渲染標記消失即自動重譯：節點被整個換掉（無標
 	assert.equal(resegs[0].state, koine.SegmentState.PENDING);
 	assert.equal(resegs[0].kind, "button", "新節點仍符合 button-class 窄判準");
 	assert.equal(resegs[0].source, "送出", "應以新節點的原文重新採集（非殘留譯文）");
-	assert.ok(resegs[0].anchor.block === fresh, "anchor.block 應為重渲染後的新節點");
+	assertSame(resegs[0].anchor.block, fresh, "anchor.block 應為重渲染後的新節點");
 });
 
 test("KO-7 標記被直接清除（同節點）同樣視為未譯：classifyNode 純看屬性、不看節點身分", () => {
@@ -210,5 +210,5 @@ test("KO-7 標記被直接清除（同節點）同樣視為未譯：classifyNode
 	const resegs = collect(doc);
 	assert.equal(resegs.length, 1, "標記消失後應重新產生一個待譯段（純屬性檢查、非節點身分快取）");
 	assert.equal(resegs[0].state, koine.SegmentState.PENDING);
-	assert.ok(resegs[0].anchor.block === btn, "anchor.block 應仍為同一節點");
+	assertSame(resegs[0].anchor.block, btn, "anchor.block 應仍為同一節點");
 });

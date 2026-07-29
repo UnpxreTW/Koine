@@ -744,7 +744,9 @@ function isShallowBlock(el, cs) {
 
 /**
  * 第二遍：用 labels 組翻譯單位（consecutiveInline 累積、block 邊界 flush）。
- * @param {Element} root  **必須是 Element**：Document / DocumentFragment 一律回 0 段（見尾端 root 閘）
+ * @param {Element} root  **必須是 Element**：Document / DocumentFragment 一律回 0 段（見尾端 root 閘）。
+ *   ⚠ 這是**文件約定、tsc 不強制**——跑道 A 一律經 helpers 的 `koine` 門面取用，而該門面標成
+ *   `any`，型別檢查在那裡就斷了；別以為改了本行就有守衛。
  * @param {CollectContext} ctx
  * @param {{ walkId?: number }} [opts]
  * @returns {Segment[]}
@@ -933,17 +935,24 @@ function collectSegments(root, ctx, opts = {}) {
 	// （`classifyNode` 對非元素回 SKIP_SUBTREE、此閘據以整棵不採）。
 	//
 	// **這是相對本閘加入前的刻意收窄，不是「維持原狀」。** 逐 commit 實測：加閘前這兩種 root
-	// 確實「採得到段」——但那是**意外**而非支援：`collect(root)` 無條件執行，子代因 root 早退
-	// 而不在 `labels` 裡，於是全落 `classifyLabel` 防禦路徑被重判成 WALK。那條路徑產出的段
-	// `anchor.block` 會是 Document／DocumentFragment（非 Element），而 `insertTranslations` 的
-	// `block.after` 與 `observeSegments` 的 `observe(block)` 都只吃 Element ⇒ 段已送翻、譯文
-	// 靜默丟失。「能跑」與「可用」在此不是同一件事。
+	// 採得到段，而且**頂層是 block 元素時整條管線是通的**——段在該 block 上成形（`anchor.block`
+	// 是 Element）、譯文確實插得回去。收窄的理由不是「完全不能用」，是**同一支 API 兩種結果**：
+	// 容器頂層直接掛裸文字或 inline 時，段在容器上成形、`anchor.block` 就是容器本身（非
+	// Element），於是 `insertTranslations` 的 `block.after` 不存在而靜默 `continue`（段已送翻、
+	// 譯文丟失無警訊），`observeSegments` 的 `observe(block)` 在真 IntersectionObserver 下則會
+	// 丟 TypeError。`<template>.content` 與 `range.cloneContents()` 頂層帶裸文字正是常態。
+	// 把「部分可用、行為不一致」換成「明確不支援」，比留著一個看運氣的入口好。
+	//
+	// （順帶更正一個容易寫錯的因果：子代不在 `labels` **不等於**剪枝失效。它們改走
+	// `classifyLabel` 重算，`disp` 原樣保留——實測 document root 下 `<head>`／`<script>`／
+	// `hidden` 全都照跳。掉的是繼承脈絡（lang／region、`hasBlockDescendant` 保守判 true），
+	// 以及 root 自身的處置——後者正是本閘要補的。）
 	//
 	// 要真正支援容器 root，得先解掉兩個**既有**風險（兩者在本閘加入前就存在、非本閘造成）：
 	// ①頁面級的剪枝豁免掛在 `<body>` 上（§3.5 把 BODY 放進降級集合正是為此），choke point 一旦
 	// 往上移到 `<html>`，`<html lang="zh-TW">`／`<html class="notranslate">` 這類主流寫法會讓整份
-	// 文件歸零——同一份 HTML 走 body-root 正常、走 document-root 零段；②非 Element anchor 的
-	// 下游處置（見上）。屬另案。
+	// 文件歸零——同一份 HTML 走 body-root 正常、走 document-root 零段；②容器頂層裸文字／inline
+	// 的非 Element anchor（見上）。屬另案。
 	if (labelOf(root).disp === "WALK") collect(root);
 	return segments;
 }
@@ -1046,12 +1055,21 @@ function insertTranslations(segments, opts = {}) {
 		const text = seg.refined ?? seg.draft;            // §9.1 並列取值 refined ?? draft
 		// 型別守衛不可省，且**替 replace 分支擋的比 after-segment 更要緊**：非字串的 text 會被
 		// `block.textContent = text` 寫成 "[object Object]"，同時 `data-koine-translated` 被設上
-		// → classifyNode [1] 之後每次採集都整棵跳過，**永遠不會自癒**，而原文只剩在
+		// → classifyNode [1] 之後每次採集都整棵跳過，**只要該節點沒被頁面自己換掉就不會自癒**
+		// （標記隨節點走，框架重渲染換節點才會消失、見 [1] 註解），而原文只剩在
 		// `data-koine-original`（還原路徑尚未實作）。同一個壞值走 after-segment 只是多一個垃圾
 		// wrapper、原文完好。`seg.refined` 目前全 repo 無寫入端（§9.1 給 v2／外部的預留欄），
 		// `Segment` typedef 也沒宣告 draft／refined、tsc 抓不到壞的寫入端。
 		// `typeof` 一併涵蓋 null／undefined（`typeof null === "object"`）。
-		if (typeof text !== "string" || text === "") continue; // 無譯文 / 譯文=空 / 型別不對 不插
+		//
+		// 兩條分開寫、不併成一條：`text == null` 與 `""` 是**有效終態**（未譯／譯文＝原文，見 §9.1），
+		// 靜默跳過是對的；非字串是**程式錯誤**（呼叫端或未來的 refine 寫入端寫壞），靜默跳過會讓
+		// 現場呈現成「翻了但沒出現」且無從追——這條值得吵一聲。
+		if (text == null || text === "") continue;        // 有效終態：無譯文 / 譯文=原文
+		if (typeof text !== "string") {
+			console.warn("[雅言] 譯文非字串、跳過插回", seg.id, typeof text);
+			continue;
+		}
 		const block = seg.anchor && seg.anchor.block;
 		if (!block) continue;
 

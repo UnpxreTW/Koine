@@ -62,14 +62,6 @@ const NODE_ELEMENT = 1;
 const NODE_TEXT = 3;
 const NODE_PI = 7;
 const NODE_COMMENT = 8;
-// 無自身盒、無屬性的容器節點：以子樹為 root 呼叫採集時的合法容器（Document／DocumentFragment）。
-const NODE_DOCUMENT = 9;
-const NODE_FRAGMENT = 11;
-
-/** 是否為無自身盒的容器節點（Document / DocumentFragment）：不產段、不擋子代、直接走進去。 */
-function isContainerNode(node) {
-	return !!node && (node.nodeType === NODE_DOCUMENT || node.nodeType === NODE_FRAGMENT);
-}
 
 // ============================================================================
 // §P4 button-class 窄判準（KO-5）：BUTTON／LABEL／role=button，
@@ -466,7 +458,8 @@ function ownLangOf(el) {
  * 採集路徑不呼叫本函式——`walkAndLabel` 已把有效 lang 以下行增量寫進 `NodeLabel.lang`
  * （O(1)/段，同 region 的作法）；本函式是未進 labels 的防禦路徑與純函式測試用。
  * @param {Element} el
- * @returns {string|null} 已小寫 trim 的語碼；查無回 null
+ * @returns {string|null} 三態同 `ownLangOf`：`null`＝整條祖先鏈都沒有 `lang` 屬性；
+ *   `""`＝最近帶 `lang` 的祖先其值為空（語言未知）；否則為該語碼（已小寫 trim）。
  */
 function effectiveLangOf(el) {
 	if (!el || typeof el.closest !== "function") return null;
@@ -634,7 +627,8 @@ function* childNodes(node) {
  * @property {boolean} hasBlockDescendant // §P4：isBlock 拆解出的純子代旗標（不含自身 shallowBlock），
  *                                         // 供 button-class 窄判準「無 block 子」核對（KO-5）
  * @property {boolean} transparent     // §2.4 display:contents：本身無盒，第二遍就地展開子節點重判
- * @property {string|null} lang        // §3.6 有效 lang：自身 lang，否則繼承祖先（含 <html>）；查無為 null
+ * @property {string|null} lang        // §3.6 有效 lang（三態、同 ownLangOf）：自身 lang，否則繼承祖先
+ *                                     // （含 <html>）；`""`＝語言未知（不繼承）、`null`＝整鏈皆無 lang
  * @property {RegionValue|null} region     // §6.5 最近 landmark 祖先（含自身）；無 landmark 為 null
  * @property {RegionValue|null} regionHint // §6.5 最近 class/id hint（含自身）；無訊號為 null
  */
@@ -673,20 +667,6 @@ function walkAndLabel(root, ctx) {
 	 * @returns {boolean} hasBlockDescendant（含自身為 block）
 	 */
 	function visit(node, landmark, hint, lang) {
-		// Document / DocumentFragment：無自身盒與屬性，不產段、不擋子代，直接走進去。
-		// 以子樹為 root 呼叫採集（動態重採、離線片段）時 DocumentFragment 是最典型的容器，
-		// 少了這條它會落到 classifyNode 的「非元素即 SKIP_SUBTREE」而整棵不採。
-		if (isContainerNode(node)) {
-			let hasBlockChild = false;
-			for (const child of childNodes(node)) {
-				if (visit(child, landmark, hint, lang)) hasBlockChild = true;
-			}
-			labels.set(node, {
-				disp: "WALK", cs: null, isBlock: true, hasBlockDescendant: hasBlockChild,
-				transparent: false, lang, region: landmark, regionHint: hint,
-			});
-			return true; // 容器對父層而言等同 block（實務上不會有父層）
-		}
 		const { disp, cs } = classifyNode(node, ctx);
 		if (disp === "SKIP_SUBTREE") {
 			labels.set(node, {
@@ -947,8 +927,16 @@ function collectSegments(root, ctx, opts = {}) {
 	// （visit 在 SKIP_SUBTREE root 即 return），於是全落 `classifyLabel` 防禦路徑被重判成 WALK
 	// ——root 的 `translate="no"` / `hidden` / `aria-hidden` / `contenteditable` / `display:none`
 	// 被靜默吃掉。生產路徑 root 恆為 `<body>`（且 BODY 在 §3.5 降級集合裡）故現況不變，
-	// 但以子樹為 root 呼叫（動態重採）時這是必要的。Document / DocumentFragment 由 walkAndLabel
-	// 的容器分支標成 WALK，故一併通過此閘。
+	// 但以**元素**子樹為 root 呼叫（動態重採）時這是必要的。
+	//
+	// ⚠ 已知範圍限制：`root` 必須是 Element。傳 Document / DocumentFragment 一律回 0 段
+	// （`classifyNode` 對非元素回 SKIP_SUBTREE、此閘據以整棵不採）。這是**刻意不支援**、
+	// 不是忘了處理——容器當 root 有兩個尚未解的設計問題：①頁面級的剪枝豁免掛在 `<body>`
+	// 上（§3.5 把 BODY 放進降級集合正是為此），往上改以 `<html>` 為 choke point 會讓
+	// `<html lang="zh-TW">`／`<html class="notranslate">` 這類主流寫法整份文件歸零；
+	// ②容器頂層的裸文字與 inline 會讓 `anchor.block` 變成非 Element，`insertTranslations`
+	// 的 `block.after` 與 `observeSegments` 的 `observe(block)` 都只吃 Element，譯文會靜默
+	// 丟失。要支援容器 root 得先把這兩題解掉，屬另案。
 	if (labelOf(root).disp === "WALK") collect(root);
 	return segments;
 }
@@ -1073,6 +1061,8 @@ function insertTranslations(segments, opts = {}) {
 			if (!hasOnlyTextChildren(/** @type {Element} */ (block))) continue;
 			// KO-7 原文存 data 屬性（純資料、無 AT 影響）。這裡刻意存**未過濾的 snapshot**、不是
 			// seg.source——它是還原用的逐字副本，連原始空白一起留住才還原得回去。
+			// ⚠ 給未來寫還原路徑的人：要還原一律讀 `data-koine-original`（逐字），**不要讀 `title`**
+			// ——後者是 normalize 後的展示字串、且長度超標時根本不存在。
 			block.setAttribute("data-koine-original", snapshot);
 			// KO-6 原文存 title tooltip，但兩個前提：①元素本來沒有 `title`——覆寫會抹掉站台自己的
 			// 提示且無還原路徑；②原文短到適合當 tooltip（見 REPLACE_TITLE_MAX_CHARS）。
@@ -1083,7 +1073,10 @@ function insertTranslations(segments, opts = {}) {
 			// 邊，`<button>\n  确认提交\n</button>` 這種多行排版（真實 HTML 的主流寫法）會算成
 			// 24 字而靜默失去 title，同一顆按鈕寫成一行就有——KO-6 的 tooltip 會在真實頁面上
 			// 大面積失效。title 顯示的也該是使用者看得懂的那一版，不是帶縮排的原字串。
-			if (!block.hasAttribute("title") && seg.source.length <= REPLACE_TITLE_MAX_CHARS) {
+			// `typeof` 守衛不可省：insertTranslations 是公開匯出、呼叫端可能手搭 segment，
+			// 而 throw 會逃出整個 for 迴圈、把同批其他段一起中止（其餘防禦路徑都只 continue）。
+			if (!block.hasAttribute("title") && typeof seg.source === "string"
+				&& seg.source.length <= REPLACE_TITLE_MAX_CHARS) {
 				block.setAttribute("title", seg.source);
 			}
 			block.textContent = text;                               // KO-6 直接換

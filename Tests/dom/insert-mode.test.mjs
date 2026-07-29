@@ -197,13 +197,41 @@ test("縮排排版的按鈕仍寫 title：長度閘比的是 normalize 後的 so
 	);
 });
 
+test("非字串譯文不得寫進 DOM：replace 分支寫壞會永遠不自癒（比 after-segment 嚴重得多）", () => {
+	// 非字串 text 會被 `block.textContent = text` 寫成 "[object Object]"，同時 data-koine-translated
+	// 被設上 → classifyNode [1] 之後每次採集都整棵跳過、永遠不會自癒，而原文只剩在
+	// data-koine-original（還原路徑尚未實作）。同一個壞值走 after-segment 只是多一個垃圾
+	// wrapper、原文完好——所以守衛對 replace 分支才是要緊的那個。
+	const doc = docFrom(`<button id="b">确认提交</button><p id="q">Plain paragraph here.</p>`);
+	const bad = {
+		id: "k9-0", order: 0, region: "main", source: "确认提交", state: koine.SegmentState.DRAFTED,
+		draft: { text: "確認提交" }, // 非字串（手搭／未來 refine 寫入端寫壞）
+		anchor: { block: doc.getElementById("b"), insertMode: "replace" },
+		meta: { replaceSnapshot: "确认提交" },
+	};
+	const alsoBad = {
+		id: "k9-1", order: 1, region: "main", source: "Plain paragraph here.",
+		state: koine.SegmentState.DRAFTED, draft: 42,
+		anchor: { block: doc.getElementById("q"), insertMode: "after-segment" },
+	};
+	assert.equal(koine.insertTranslations([bad, alsoBad]).length, 0, "兩個壞值都不得插回");
+
+	const b = doc.getElementById("b");
+	assert.equal(b.textContent, "确认提交", "原文必須留著、不得變成 [object Object]");
+	assert.ok(!b.hasAttribute("data-koine-translated"), "沒寫成功就不得標記已譯（否則永不重採）");
+	assert.equal(doc.querySelectorAll(".koine-translated").length, 0, "after-segment 側也不得插垃圾 wrapper");
+});
+
 test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻意不支援、非疏漏）", () => {
-	// 這條釘的是**範圍限制本身**，不是「容器擋住子代」這個 bug。曾經改成支援容器 root，
-	// 但那會開出兩個更糟的洞：①頁面級剪枝豁免掛在 <body> 上（§3.5 把 BODY 放進降級集合
-	// 正是為此），choke point 往上移到 <html> 之後，<html lang="zh-TW"> 這類主流寫法會讓
-	// 整份文件歸零——同一份 HTML 走 body-root 正常、走 document-root 零段；②容器頂層的
-	// 裸文字與 inline 會讓 anchor.block 變成非 Element，insertTranslations 與 observeSegments
-	// 都只吃 Element，譯文會靜默丟失（段已送翻、成本已付）。兩題都要各自的設計，屬另案。
+	// 這條釘的是**範圍限制本身**。逐 commit 實測過：採集 root 閘加入前，這兩種容器確實
+	// 「採得到段」——但那是意外而非支援。子代因 root 早退而不在 labels 裡，全落防禦路徑被
+	// 重判成 WALK，產出的段 anchor.block 是容器本身（非 Element），而 insertTranslations 的
+	// block.after 與 observeSegments 的 observe(block) 都只吃 Element ⇒ 段已送翻、譯文靜默
+	// 丟失。所以這是**刻意收窄**，把「能跑但不可用」換成「明確不支援」。
+	//
+	// 要真正支援容器 root，得先解掉兩個既有風險（兩者在 root 閘之前就存在）：①頁面級剪枝
+	// 豁免掛在 <body> 上，choke point 往上移到 <html> 會讓 <html lang="zh-TW"> 這類主流寫法
+	// 整份文件歸零；②非 Element anchor 的下游處置。屬另案。
 	//
 	// 哪天真的支援了，本測試會紅——那時該連同這段說明一起改寫，而不是默默放寬。
 	const doc = docFrom(`<p>Hello there friend.</p>`);
@@ -216,11 +244,16 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 	frag.appendChild(p);
 	assert.equal(koine.collectSegments(frag, ctx, { walkId: 1 }).length, 0, "DocumentFragment 為 root 回 0 段");
 
-	// 對照：同樣的內容以 Element 為 root 採得到——證明上面 0 段是 root 型別限制，不是採集壞了。
-	const host = doc.createElement("div");
-	host.appendChild(doc.createElement("p"));
-	host.firstChild.textContent = "Element root works fine.";
-	assert.equal(koine.collectSegments(host, ctx, { walkId: 1 }).length, 1, "Element 為 root 正常採集");
+	// 對照組刻意只差 root 型別、其餘全同（同一份 doc、同一顆 p、同一段文字），這樣 0 段的
+	// 唯一解釋就是 root 型別，排除掉「這份 doc／這段文字本身就採不到」。
+	assert.equal(
+		koine.collectSegments(doc.body, ctx, { walkId: 1 }).length, 1,
+		"同一份 doc 改以 body（Element）為 root → 1 段",
+	);
+	assert.equal(
+		koine.collectSegments(p, ctx, { walkId: 1 }).length, 1,
+		"同一顆 p（Element）為 root → 1 段",
+	);
 });
 
 // ---------------------------------------------------------------------------

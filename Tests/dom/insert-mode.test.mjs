@@ -222,16 +222,35 @@ test("非字串譯文不得寫進 DOM：replace 分支寫壞會永遠不自癒�
 	assert.equal(doc.querySelectorAll(".koine-translated").length, 0, "after-segment 側也不得插垃圾 wrapper");
 });
 
+test("壞掉的 refined 不得蓋掉好的 draft：refined ?? draft 是 refined 勝，那格才是未來的寫入點", () => {
+	// `seg.refined` 目前全 repo 無寫入端，是留給 post-edit 層／外部的預留欄——也就是最可能
+	// 被寫壞的那一格。取值是 `refined ?? draft`（refined 勝），所以一個壞掉的 refined 會讓
+	// 原本正常的 draft 靜默消失。
+	const doc = docFrom(`<button id="b">确认提交</button>`);
+	const seg = {
+		id: "k9-2", order: 0, region: "main", source: "确认提交", state: koine.SegmentState.DRAFTED,
+		draft: "確認提交", refined: { text: "確認提交" }, // draft 正常、refined 壞掉
+		anchor: { block: doc.getElementById("b"), insertMode: "replace" },
+		meta: { replaceSnapshot: "确认提交" },
+	};
+	assert.equal(koine.insertTranslations([seg]).length, 0, "壞掉的 refined 不得寫進 DOM");
+	const b = doc.getElementById("b");
+	assert.equal(b.textContent, "确认提交", "原文必須留著（不得寫成 [object Object]）");
+	assert.ok(!b.hasAttribute("data-koine-translated"), "沒寫成功就不得標記已譯");
+});
+
 test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻意不支援、非疏漏）", () => {
-	// 這條釘的是**範圍限制本身**。逐 commit 實測過：採集 root 閘加入前，這兩種容器確實
-	// 「採得到段」——但那是意外而非支援。子代因 root 早退而不在 labels 裡，全落防禦路徑被
-	// 重判成 WALK，產出的段 anchor.block 是容器本身（非 Element），而 insertTranslations 的
-	// block.after 與 observeSegments 的 observe(block) 都只吃 Element ⇒ 段已送翻、譯文靜默
-	// 丟失。所以這是**刻意收窄**，把「能跑但不可用」換成「明確不支援」。
+	// 這條釘的是**範圍限制本身**。逐 commit 實測過：採集 root 閘加入前這兩種容器採得到段，
+	// 而且**頂層是 block 元素時整條管線是通的**（段在該 block 上成形、anchor.block 是 Element、
+	// 譯文真的插得回去）。收窄的理由不是「完全不能用」，是**同一支 API 兩種結果**：容器頂層
+	// 直接掛裸文字或 inline 時，段在容器上成形、anchor.block 就是容器本身（非 Element），
+	// insertTranslations 的 block.after 不存在而靜默跳過（段已送翻、譯文丟失無警訊），
+	// observeSegments 的 observe(block) 在真 IntersectionObserver 下會丟 TypeError。
+	// <template>.content 與 range.cloneContents() 頂層帶裸文字正是常態。
 	//
 	// 要真正支援容器 root，得先解掉兩個既有風險（兩者在 root 閘之前就存在）：①頁面級剪枝
 	// 豁免掛在 <body> 上，choke point 往上移到 <html> 會讓 <html lang="zh-TW"> 這類主流寫法
-	// 整份文件歸零；②非 Element anchor 的下游處置。屬另案。
+	// 整份文件歸零；②容器頂層裸文字／inline 的非 Element anchor。屬另案。
 	//
 	// 哪天真的支援了，本測試會紅——那時該連同這段說明一起改寫，而不是默默放寬。
 	const doc = docFrom(`<p>Hello there friend.</p>`);
@@ -244,8 +263,13 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 	frag.appendChild(p);
 	assert.equal(koine.collectSegments(frag, ctx, { walkId: 1 }).length, 0, "DocumentFragment 為 root 回 0 段");
 
-	// 對照組刻意只差 root 型別、其餘全同（同一份 doc、同一顆 p、同一段文字），這樣 0 段的
-	// 唯一解釋就是 root 型別，排除掉「這份 doc／這段文字本身就採不到」。
+	// 對照組刻意只差 root 型別、其餘全同（各配對內同一份 doc／同一顆節點），這樣 0 段的唯一
+	// 解釋就是 root 型別。documentElement 那條特別重要：少了它，「0 段其實出在 <html> 這層被
+	// 判 SKIP」這個競爭解釋還活著。
+	assert.equal(
+		koine.collectSegments(doc.documentElement, ctx, { walkId: 1 }).length, 1,
+		"同一份 doc 改以 documentElement（Element）為 root → 1 段（<html> 那層沒被判 SKIP）",
+	);
 	assert.equal(
 		koine.collectSegments(doc.body, ctx, { walkId: 1 }).length, 1,
 		"同一份 doc 改以 body（Element）為 root → 1 段",

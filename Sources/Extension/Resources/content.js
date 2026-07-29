@@ -62,6 +62,14 @@ const NODE_ELEMENT = 1;
 const NODE_TEXT = 3;
 const NODE_PI = 7;
 const NODE_COMMENT = 8;
+// 無自身盒、無屬性的容器節點：以子樹為 root 呼叫採集時的合法容器（Document／DocumentFragment）。
+const NODE_DOCUMENT = 9;
+const NODE_FRAGMENT = 11;
+
+/** 是否為無自身盒的容器節點（Document / DocumentFragment）：不產段、不擋子代、直接走進去。 */
+function isContainerNode(node) {
+	return !!node && (node.nodeType === NODE_DOCUMENT || node.nodeType === NODE_FRAGMENT);
+}
 
 // ============================================================================
 // §P4 button-class 窄判準（KO-5）：BUTTON／LABEL／role=button，
@@ -237,7 +245,8 @@ function detectPageLangIsZh(htmlLang, sample = "") {
 	const lang = htmlLang?.toLowerCase().trim();
 	if (lang) {
 		if (lang === "zh-cn" || lang.startsWith("zh-hans")) return false;
-		return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw") || lang.startsWith("zh-hk");
+		return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw")
+			|| lang.startsWith("zh-hk") || lang.startsWith("zh-mo"); // 繁中變體集與 isTraditionalChineseTarget 同步
 	}
 	return RE_HAS_HAN.test(sample) && !RE_HAS_KANA.test(sample) && !RE_HAS_HANGUL.test(sample);
 }
@@ -406,7 +415,7 @@ function isAlreadyTargetLang(el, targetLang) {
 
 /**
  * §3.6 目標語是否為繁中（`insertMode` 語言對軸用）。
- * 收 `zh-hk` / `zh-mo`：兩者慣用繁體字，`detectPageLangIsZh` 亦已把 `zh-hk` 收在繁中側。
+ * 收 `zh-hk` / `zh-mo`：兩者慣用繁體字，與 `detectPageLangIsZh` 用同一組繁中變體集（該處已一併補上 `zh-mo`）。
  * ⚠ 已知既有落差（非本函式造成）：`isAlreadyTargetLang` 對非 `zh` / `zh-hant` / `zh-tw` 的
  * 目標語會落到 BCP-47 primary subtag 比對，`zh-HK` 目標下 `lang="zh-CN"` 的段會被判成
  * 「已達目標語」而整棵跳，輪不到本軸。今天不現形（`makeContext` 硬編 `zh-Hant` 預設、
@@ -426,11 +435,22 @@ function isSimplifiedChinese(lang) {
 	return lang === "zh-cn" || lang.startsWith("zh-hans");
 }
 
-/** §3.6 元素自身的 `lang`（已小寫 trim）；無則 null。 @param {Element} el */
+/**
+ * §3.6 元素自身的 `lang`，已小寫 trim。**三態、不可折成兩態**：
+ * - `null`＝沒有 `lang` 屬性 → 語言由祖先決定（繼承）。
+ * - `""`＝有 `lang` 但值為空 → HTML 規範的「語言未知」，**明確不繼承祖先**、到此為止。
+ * - 其他＝該語碼。
+ *
+ * 把 `""` 折進 `null` 會讓 `lang=""` 靜默繼承祖先語言——正是這個函式最容易寫錯的地方，
+ * 且錯的那一側是破壞性的（誤判成簡中就會就地取代、原文從頁面消失）。
+ * @param {Element} el
+ * @returns {string|null}
+ */
 function ownLangOf(el) {
 	if (!el || typeof el.getAttribute !== "function") return null;
-	const lang = el.getAttribute("lang")?.toLowerCase().trim();
-	return lang || null;
+	const raw = el.getAttribute("lang");
+	if (raw === null || raw === undefined) return null; // 無屬性 → 繼承
+	return raw.toLowerCase().trim();                     // 含 "" → 語言未知、不繼承
 }
 
 /**
@@ -451,9 +471,10 @@ function ownLangOf(el) {
 function effectiveLangOf(el) {
 	if (!el || typeof el.closest !== "function") return null;
 	const holder = el.closest("[lang]");
-	if (!holder || typeof holder.getAttribute !== "function") return null;
-	const lang = holder.getAttribute("lang")?.toLowerCase().trim();
-	return lang || null;
+	if (!holder) return null;
+	// 最近帶 lang 屬性的祖先（含自身）說了算，`lang=""` 亦然（＝語言未知、不再往上找）。
+	// 必須與 walkAndLabel 的下行增量給出同一個答案——兩條路徑分歧時，錯的那一側會是破壞性的。
+	return ownLangOf(/** @type {Element} */ (holder));
 }
 
 
@@ -640,8 +661,8 @@ function walkAndLabel(root, ctx) {
 	for (let n = rootEl.parentElement; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
 		if (!rootLandmark) rootLandmark = landmarkRegionOf(n);
 		if (!rootHint) rootHint = regionHintOf(n);
-		if (!rootLang) rootLang = ownLangOf(n);
-		if (rootLandmark && rootHint && rootLang) break;
+		if (rootLang === null) rootLang = ownLangOf(n); // "" 也算找到（語言未知）、停止上溯
+		if (rootLandmark && rootHint && rootLang !== null) break;
 	}
 
 	/**
@@ -652,6 +673,20 @@ function walkAndLabel(root, ctx) {
 	 * @returns {boolean} hasBlockDescendant（含自身為 block）
 	 */
 	function visit(node, landmark, hint, lang) {
+		// Document / DocumentFragment：無自身盒與屬性，不產段、不擋子代，直接走進去。
+		// 以子樹為 root 呼叫採集（動態重採、離線片段）時 DocumentFragment 是最典型的容器，
+		// 少了這條它會落到 classifyNode 的「非元素即 SKIP_SUBTREE」而整棵不採。
+		if (isContainerNode(node)) {
+			let hasBlockChild = false;
+			for (const child of childNodes(node)) {
+				if (visit(child, landmark, hint, lang)) hasBlockChild = true;
+			}
+			labels.set(node, {
+				disp: "WALK", cs: null, isBlock: true, hasBlockDescendant: hasBlockChild,
+				transparent: false, lang, region: landmark, regionHint: hint,
+			});
+			return true; // 容器對父層而言等同 block（實務上不會有父層）
+		}
 		const { disp, cs } = classifyNode(node, ctx);
 		if (disp === "SKIP_SUBTREE") {
 			labels.set(node, {
@@ -680,7 +715,9 @@ function walkAndLabel(root, ctx) {
 		// §6.5 下行增量：最近者勝（更近 landmark / hint 覆蓋繼承值）、O(1)/段。
 		const region = landmarkRegionOf(el) || landmark;
 		const nearHint = regionHintOf(el) || hint;
-		const nearLang = ownLangOf(el) || lang;
+		// `??` 不能換成 `||`：`lang=""`（語言未知）是有效值、不得回退成繼承（見 ownLangOf）。
+		const ownLang = ownLangOf(el);
+		const nearLang = ownLang === null ? lang : ownLang;
 		let hasBlockChild = false;
 		for (const child of childNodes(el)) {
 			if (visit(child, region, nearHint, nearLang)) hasBlockChild = true;
@@ -910,7 +947,8 @@ function collectSegments(root, ctx, opts = {}) {
 	// （visit 在 SKIP_SUBTREE root 即 return），於是全落 `classifyLabel` 防禦路徑被重判成 WALK
 	// ——root 的 `translate="no"` / `hidden` / `aria-hidden` / `contenteditable` / `display:none`
 	// 被靜默吃掉。生產路徑 root 恆為 `<body>`（且 BODY 在 §3.5 降級集合裡）故現況不變，
-	// 但以子樹為 root 呼叫（動態重採）時這是必要的。
+	// 但以子樹為 root 呼叫（動態重採）時這是必要的。Document / DocumentFragment 由 walkAndLabel
+	// 的容器分支標成 WALK，故一併通過此閘。
 	if (labelOf(root).disp === "WALK") collect(root);
 	return segments;
 }
@@ -1033,12 +1071,20 @@ function insertTranslations(segments, opts = {}) {
 			// textContent 出現差異，但仍會被緊接著的 textContent 覆寫整個砍掉。插回前必須用採集時
 			// 同一套「只有純文字子代」判準重新核一次目前的即時結構，結構已變同樣視為 drift、放棄覆寫。
 			if (!hasOnlyTextChildren(/** @type {Element} */ (block))) continue;
-			block.setAttribute("data-koine-original", snapshot); // KO-7 原文存 data 屬性（純資料、無 AT 影響）
+			// KO-7 原文存 data 屬性（純資料、無 AT 影響）。這裡刻意存**未過濾的 snapshot**、不是
+			// seg.source——它是還原用的逐字副本，連原始空白一起留住才還原得回去。
+			block.setAttribute("data-koine-original", snapshot);
 			// KO-6 原文存 title tooltip，但兩個前提：①元素本來沒有 `title`——覆寫會抹掉站台自己的
 			// 提示且無還原路徑；②原文短到適合當 tooltip（見 REPLACE_TITLE_MAX_CHARS）。
 			// 不符就只留 `data-koine-original`。
-			if (!block.hasAttribute("title") && snapshot.length <= REPLACE_TITLE_MAX_CHARS) {
-				block.setAttribute("title", snapshot);
+			//
+			// **長度與內容都取 `seg.source`、不取 `snapshot`**：snapshot 是原始 textContent，含
+			// HTML 縮排；而①軸的 BUTTON_CLASS_MAX_CHARS 卡的是 normalize 後的 source。兩者比錯
+			// 邊，`<button>\n  确认提交\n</button>` 這種多行排版（真實 HTML 的主流寫法）會算成
+			// 24 字而靜默失去 title，同一顆按鈕寫成一行就有——KO-6 的 tooltip 會在真實頁面上
+			// 大面積失效。title 顯示的也該是使用者看得懂的那一版，不是帶縮排的原字串。
+			if (!block.hasAttribute("title") && seg.source.length <= REPLACE_TITLE_MAX_CHARS) {
+				block.setAttribute("title", seg.source);
 			}
 			block.textContent = text;                               // KO-6 直接換
 			block.setAttribute("data-koine-translated", "");        // KO-7 防自吞標記（消失即視為未譯）

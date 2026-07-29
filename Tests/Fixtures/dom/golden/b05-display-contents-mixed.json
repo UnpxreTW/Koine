@@ -1,0 +1,5 @@
+[
+	{ "order": 0, "source": "Lead sentence before. Inline text inside.", "state": "pending" },
+	{ "order": 1, "source": "Block child paragraph.", "state": "pending" },
+	{ "order": 2, "source": "Trailing inline text. After the container.", "state": "pending" }
+]

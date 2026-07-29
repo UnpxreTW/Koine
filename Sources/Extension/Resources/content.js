@@ -97,14 +97,27 @@ function hasOnlyTextChildren(el) {
 // ============================================================================
 
 /**
+ * §2.4 `display:contents`：元素本身不產生任何盒，子節點就地當父的子節點參與版面。
+ * 採集層對應處置＝透明穿透（走訪時展開子節點重判，見 walkAndLabel / collectSegments），
+ * 不把整個容器當成一個不可分割的 inline 原子。
+ * @param {string} display
+ * @returns {boolean}
+ */
+function isTransparentDisplay(display) {
+	return display === "contents";
+}
+
+/**
  * 所有 display 最終歸三條：startsWith('inline') ∨ === 'contents' ∨ startsWith('ruby')，否則 block。
+ * contents 回 true 的意思是「不是 block 盒」（它根本沒有盒）——真正的處置是透明穿透，
+ * 由走訪層在此判斷之前先攤平掉，不會有 contents 元素以 inline 身分留在段落 buffer 裡。
  * @param {string} display
  * @returns {boolean}
  */
 function isInlineDisplay(display) {
 	if (!display) return false;
 	if (display.startsWith("inline")) return true; // inline / inline-block / inline-flex|grid|table
-	if (display === "contents") return true;        // §2.4 fallback 當 inline（透明穿透待升）
+	if (isTransparentDisplay(display)) return true; // §2.4 無盒 → 絕不可當 block（實際走透明穿透）
 	if (display.startsWith("ruby")) return true;    // 實際只 cover <ruby> 容器
 	return false;
 }
@@ -523,6 +536,7 @@ function* childNodes(node) {
  * @property {boolean} isBlock         // shallow block ∨ 含 block 子（forceBlock 上傳）
  * @property {boolean} hasBlockDescendant // §P4：isBlock 拆解出的純子代旗標（不含自身 shallowBlock），
  *                                         // 供 button-class 窄判準「無 block 子」核對（KO-5）
+ * @property {boolean} transparent     // §2.4 display:contents：本身無盒，第二遍就地展開子節點重判
  * @property {RegionValue|null} region     // §6.5 最近 landmark 祖先（含自身）；無 landmark 為 null
  * @property {RegionValue|null} regionHint // §6.5 最近 class/id hint（含自身）；無訊號為 null
  */
@@ -558,16 +572,25 @@ function walkAndLabel(root, ctx) {
 	function visit(node, landmark, hint) {
 		const { disp, cs } = classifyNode(node, ctx);
 		if (disp === "SKIP_SUBTREE") {
-			labels.set(node, { disp, cs, isBlock: false, hasBlockDescendant: false, region: landmark, regionHint: hint });
+			labels.set(node, {
+				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
+				region: landmark, regionHint: hint,
+			});
 			return false;
 		}
 		if (disp === "OPAQUE_INLINE") {
-			labels.set(node, { disp, cs, isBlock: false, hasBlockDescendant: false, region: landmark, regionHint: hint });
+			labels.set(node, {
+				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
+				region: landmark, regionHint: hint,
+			});
 			return false; // 不展開、不可分割、視為 inline
 		}
 		// WALK
 		if (node.nodeType === NODE_TEXT) {
-			labels.set(node, { disp, cs, isBlock: false, hasBlockDescendant: false, region: landmark, regionHint: hint });
+			labels.set(node, {
+				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
+				region: landmark, regionHint: hint,
+			});
 			return false;
 		}
 
@@ -586,9 +609,19 @@ function walkAndLabel(root, ctx) {
 		}
 
 		const shallowBlock = isShallowBlock(el, cs);
+		// §2.4 透明穿透：display:contents 不產生盒 → 標透明，第二遍就地展開子節點當父的子節點重判。
+		// FORCE_BLOCK 白名單與 role=button 一律贏（§2.2 / §P4 KO-5）：isShallowBlock 已為 true 就不透明，
+		// 該元素照常當 block flush 邊界，其子代仍各自成段——差別只在容器內的裸 inline 不與容器外的相鄰
+		// inline 併段，屬保守側，不必為此在集合規則上再開特例。
+		const transparent = !shallowBlock && !!cs && isTransparentDisplay(cs.display);
 		// forceBlock 上傳：自身 block，或含 block 子（混排）→ 走 block flush 分支。
+		// 透明元素回傳的是「子代有沒有 block」——穿透後那些 block 就是父的直接子代，訊號照樣要上傳，
+		// 父才會走混排 flush 分支（§2.5）。
 		const isBlock = shallowBlock || hasBlockChild;
-		labels.set(node, { disp, cs, isBlock, hasBlockDescendant: hasBlockChild, region, regionHint: nearHint });
+		labels.set(node, {
+			disp, cs, isBlock, hasBlockDescendant: hasBlockChild, transparent,
+			region, regionHint: nearHint,
+		});
 		return isBlock;
 	}
 
@@ -628,8 +661,29 @@ function collectSegments(root, ctx, opts = {}) {
 		const { disp, cs } = classifyNode(node, c);
 		const isBlock = node.nodeType === NODE_ELEMENT && disp === "WALK"
 			&& isShallowBlock(/** @type {Element} */ (node), cs);
+		const transparent = !isBlock && node.nodeType === NODE_ELEMENT && disp === "WALK"
+			&& !!cs && isTransparentDisplay(cs.display);
 		// 未知子代資訊時保守視為「有 block 子」，防禦路徑不誤判為 button-class（§P4）。
-		return { disp, cs, isBlock, hasBlockDescendant: true, region: null, regionHint: null };
+		return { disp, cs, isBlock, hasBlockDescendant: true, transparent, region: null, regionHint: null };
+	}
+	/**
+	 * §2.4 透明穿透：`display:contents` 元素不產生盒，走訪時就地以其子節點取代自身（可巢狀）。
+	 * 攤平發生在組段之前，所以容器內外的 inline 會併進同一段、容器不再是 flush 邊界，段的
+	 * anchor.block 也永遠落在真正有盒的祖先上（無盒元素當 anchor 會讓譯文插到錯位置、
+	 * 且 getBoundingClientRect 全零會被排程誤判成「正在視窗內」）。
+	 * 回傳 [節點, label] 對，省掉呼叫端重查一次 label。
+	 * @param {Node} node
+	 * @returns {Generator<[Node, NodeLabel]>}
+	 */
+	function* effectiveChildren(node) {
+		for (const child of childNodes(node)) {
+			const label = labelOf(child);
+			if (label.transparent) {
+				yield* effectiveChildren(child);
+				continue;
+			}
+			yield [child, label];
+		}
 	}
 	/**
 	 * §6.5 段 region：landmark 由第一遍 walk stack 增量取得；無 landmark 時 flush 點三訊號評分。
@@ -669,11 +723,11 @@ function collectSegments(root, ctx, opts = {}) {
 			if (buffer.length) makeSegmentFromBuffer(buffer, node);
 			buffer = [];
 		};
-		for (const child of childNodes(node)) {
+		for (const [child, label] of effectiveChildren(node)) {
 			if (child.nodeType === NODE_COMMENT || child.nodeType === NODE_PI) continue; // G5
-			const { disp, isBlock } = labelOf(child);
+			const { disp, isBlock } = label;
 			if (disp === "SKIP_SUBTREE") continue; // 不切段：跳過不可見/無關子樹，buffer 續接
-			if (child.nodeType === NODE_ELEMENT && child.tagName === "BR") {
+			if (child.nodeType === NODE_ELEMENT && /** @type {Element} */ (child).tagName === "BR") {
 				buffer.push(child); // §6.2 BR→\n（extractText 處理）
 				continue;
 			}
@@ -739,7 +793,7 @@ function makeAnchor(buf, blockNode) {
 }
 
 // ============================================================================
-// §6.2 extractText 三特判（br / ruby / contents）+ 記 code/time protectedSpans
+// §6.2 extractText 特判（br / ruby）+ 記 code/time protectedSpans
 // ============================================================================
 
 /**
@@ -770,7 +824,8 @@ function appendNode(node, text, spans) {
 		spans.push({ start, end: text.length, kind: tag.toLowerCase() });
 		return text;
 	}
-	// 其餘 inline 元素：遞迴子節點（ruby base、巢狀 inline、contents 容器）
+	// 其餘 inline 元素：遞迴子節點（ruby base、巢狀 inline）。`display:contents` 容器不會整個進
+	// buffer（走訪層已就地攤平），巢狀在 buffer 內某個 inline 底下時由這條遞迴取到同樣的文字。
 	for (const child of childNodes(el)) {
 		text = appendNode(child, text, spans);
 	}
@@ -1176,7 +1231,7 @@ if (typeof document !== "undefined" && typeof browser !== "undefined") {
 const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
 	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS,
-	isInlineDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
+	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
 	isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,

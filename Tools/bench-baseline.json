@@ -1,0 +1,38 @@
+{
+	"input": {
+		"seed": 1,
+		"sections": 60,
+		"bodyBytes": 37779
+	},
+	"config": {
+		"n": 30,
+		"warmup": 3,
+		"gc": true
+	},
+	"counters": {
+		"segmentCount": 505,
+		"computedStyleCalls": 854,
+		"sourceChars": 26837,
+		"buttonSegments": 8,
+		"protectedSpans": 27,
+		"state.pending": 462,
+		"region.chrome": 25,
+		"region.main": 480,
+		"state.skipped": 43
+	},
+	"counterVariants": 1,
+	"collectMs": {
+		"min": 4.025958000000003,
+		"p50": 4.296084000000008,
+		"p95": 5.110458999999992,
+		"mean": 4.498482033333328,
+		"cv": 0.0792494447814185
+	},
+	"peakRssMB": 87.6,
+	"env": {
+		"platform": "darwin",
+		"arch": "arm64",
+		"nodeMajor": 24,
+		"cpu": "Apple M1"
+	}
+}

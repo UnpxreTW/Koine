@@ -19,6 +19,7 @@ path = [
 	"package-lock.json",
 	"Tests/Fixtures/**",
 	"Tests/**/__Golden__/**",
+	"Tools/bench-baseline.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Unpxre (GitHub: UnpxreTW)"

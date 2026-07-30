@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { koine, loadFixture, collect } from "./helpers.mjs";
+import { koine, loadFixture, collect, assertSame } from "./helpers.mjs";
 
 /** 沖掉 microtask（onEnter 走 Promise 鏈，需跨一個 macrotask 讓其結算）。 */
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -107,7 +107,7 @@ test("多段共用同一 block：進場一併觸發 onEnter — 11-block-in-inli
 	const doc = loadFixture("11-block-in-inline");
 	const segs = collect(doc); // before(span) / block child(div) / after(span)
 	const span = segs[0].anchor.block;
-	assert.equal(segs[2].anchor.block, span, "前提：before/after 共用同一 span block");
+	assertSame(segs[2].anchor.block, span, "前提：before/after 共用同一 span block");
 	const stub = makeStubObserver();
 	const entered = [];
 	koine.observeSegments(segs, { onEnter: (s) => entered.push(s.id), makeObserver: stub.factory });

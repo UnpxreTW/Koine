@@ -10,10 +10,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { koine } from "./helpers.mjs";
 
-test("lang 屬性分支：zh-Hant/zh-TW/zh-HK/裸 zh → true", () => {
+test("lang 屬性分支：zh-Hant/zh-TW/zh-HK/zh-MO/裸 zh → true", () => {
 	assert.equal(koine.detectPageLangIsZh("zh-Hant"), true);
 	assert.equal(koine.detectPageLangIsZh("zh-TW"), true);
 	assert.equal(koine.detectPageLangIsZh("zh-HK"), true);
+	// zh-MO（澳門）慣用繁體，與 isTraditionalChineseTarget 用同一組繁中變體集。
+	// 這不是純粹的內部同步：它讓 <html lang="zh-MO"> 頁面上的純漢字段由 pending 轉為
+	// skipped(already-target)，是可觀察的行為改變，故明寫成斷言。
+	assert.equal(koine.detectPageLangIsZh("zh-MO"), true);
 	assert.equal(koine.detectPageLangIsZh("zh"), true);
 	assert.equal(koine.detectPageLangIsZh("ZH-HANT-TW"), true, "大小寫不敏感");
 });
@@ -22,6 +26,7 @@ test("lang 屬性分支：zh-CN/zh-Hans → false（簡中頁仍需譯成目標 
 	assert.equal(koine.detectPageLangIsZh("zh-CN"), false);
 	assert.equal(koine.detectPageLangIsZh("zh-Hans"), false);
 	assert.equal(koine.detectPageLangIsZh("zh-Hans-CN"), false);
+	assert.equal(koine.detectPageLangIsZh("zh-Hans-MO"), false, "script 子標籤優先於地區：簡體澳門仍需譯");
 });
 
 test("lang 屬性分支：明確非 zh 語碼 → false，不落到取樣 heuristic", () => {

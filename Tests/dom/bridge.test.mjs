@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { koine, loadFixture, collect } from "./helpers.mjs";
+import { koine, loadFixture, collect, assertSame } from "./helpers.mjs";
 
 test("成功：pending→drafting→drafted、塞 draft、送 payload 形狀、成功即插回", async () => {
 	const doc = loadFixture("01-basic-paragraphs");
@@ -42,7 +42,7 @@ test("失敗（回 error）：→failed、記 failReason、不插回", async () 
 	await koine.translateSegment(seg, send);
 	assert.equal(seg.state, koine.SegmentState.FAILED);
 	assert.equal(seg.meta.failReason, "unable");
-	assert.equal(doc.querySelector(`[data-koine-id="${seg.id}"]`), null, "失敗不得插回");
+	assertSame(doc.querySelector(`[data-koine-id="${seg.id}"]`), null, "失敗不得插回");
 });
 
 test("失敗（send throw / reject）：→failed、reason 帶錯誤", async () => {
@@ -81,7 +81,7 @@ test("§9.1 空譯文（res.text=\"\"）：DRAFTED 但不插回（譯文=原文�
 	await koine.translateSegment(seg, send);
 	assert.equal(seg.state, koine.SegmentState.DRAFTED, "空譯文仍 drafted（非 failed）");
 	assert.equal(seg.draft, "");
-	assert.equal(doc.querySelector(`[data-koine-id="${seg.id}"]`), null, "空譯文不插 wrapper（§9.1）");
+	assertSame(doc.querySelector(`[data-koine-id="${seg.id}"]`), null, "空譯文不插 wrapper（§9.1）");
 });
 
 test("buildBridgeMessage：組出 native 訊息形狀 { type:'translate', id, source, from, to }", () => {

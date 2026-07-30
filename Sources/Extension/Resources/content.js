@@ -224,11 +224,91 @@ function isFilenameOnly(t) {
 	return KNOWN_EXT.has(t.slice(dot + 1).toLowerCase());
 }
 
+// ============================================================================
+// zh 書寫變體分類（§3.6 / §4.9 共用的單一真相）
+// ============================================================================
+
+/** 地區子標籤 → 繁體（缺 script 子標籤時的回退依據）。 */
+const ZH_HANT_REGIONS = new Set(["tw", "hk", "mo"]);
+/** 地區子標籤 → 簡體（缺 script 子標籤時的回退依據）。 */
+const ZH_HANS_REGIONS = new Set(["cn", "sg", "my"]);
+
+/**
+ * @typedef {'hant' | 'hans' | 'zh' | 'unknown'} ZhVariant
+ * `zh`＝是中文、明確未指明書寫系統（僅裸 `zh`）；`unknown`＝是中文標籤但認不出書寫系統
+ */
+
+/**
+ * 把 BCP-47 語言標籤歸進中文的書寫系統。判定只看標籤語法、不做內容偵測。
+ *
+ * script 子標籤優先於地區：`zh-Hans-MO` 是簡體，不因 MO 判成繁體。`Hant`／`Hans` 無歧義，故位置
+ * 無關採認（涵蓋 extlang 形 `zh-cmn-Hans-CN`、以及順序顛倒的畸形標籤）；地區則要求出現在
+ * extension／private-use 之前，那之後的值不描述書寫系統。
+ *
+ * **`zh` 與 `unknown` 必須分開。** 呼叫端把「未指明書寫系統」當成滿足繁中目標（見
+ * `zhVariantSatisfies`），而判成已達目標語的後果是該段完全不翻。若把所有認不出的 `zh-*` 都併進
+ * `zh`，這條豁免就從單一語碼放大成萬用桶：`zh-CHS`（.NET 遺留的簡體碼、野生網頁仍見）之類會
+ * 被判成已達繁中目標而整頁不翻——正是本函式要修掉的失效模式換個標籤形狀復活。認不出就回
+ * `unknown`、不猜，代價只是多送一次翻譯。
+ *
+ * @param {string | null | undefined} tag BCP-47 語言標籤（大小寫不敏感、容許前後空白與底線分隔）
+ * @returns {ZhVariant | null} `null`＝不是中文標籤
+ */
+function classifyZhVariant(tag) {
+	// 底線形（`zh_TW`）不合 BCP-47，但 Apple 的 locale identifier 與野生 lang 屬性都出現得到。
+	const t = tag?.toLowerCase().trim().replace(/_/g, "-");
+	if (!t) return null;
+	const subtags = t.split("-");
+	if (subtags[0] !== "zh") return null;
+	if (subtags.length === 1) return "zh";
+	const singleton = subtags.findIndex((s, i) => i > 0 && s.length === 1);
+	const core = subtags.slice(1, singleton === -1 ? undefined : singleton);
+	if (core.includes("hant")) return "hant";
+	if (core.includes("hans")) return "hans";
+	// 明示了既非 Hant 也非 Hans 的 script（`zh-Latn` 拼音、`zh-Hani` 泛漢字）：地區提示對書寫
+	// 系統失效。
+	if (core.some((s) => s.length === 4)) return "unknown";
+	for (const s of core) {
+		if (ZH_HANT_REGIONS.has(s)) return "hant";
+		if (ZH_HANS_REGIONS.has(s)) return "hans";
+	}
+	return "unknown";
+}
+
+/**
+ * §3.6 元素 lang 的書寫變體是否滿足目標語的書寫變體。
+ *
+ * 判定粒度＝書寫系統、不分地區：`zh-TW` 的段對 `zh-HK` 目標算已達標，同 `zh-Hant` 目標對 `zh-TW`
+ * 段既有的作法。用詞差異（繁中各地區慣用語）不在本 gate 的職責內。
+ *
+ * 未指明書寫系統的裸 `zh` 對繁中目標算已達標、對簡中目標不算——沿用既有的非對稱行為、本次不改：
+ * 判成已達標會讓該段完全不翻，往「不翻」放寬需要 Apple 支援度實測撐腰。
+ *
+ * `unknown`（含目標語自己認不出書寫系統時）一律不算已達標：多送一次翻譯，不吃掉該段。
+ *
+ * @param {ZhVariant} targetVariant
+ * @param {ZhVariant | null} langVariant
+ * @returns {boolean}
+ */
+function zhVariantSatisfies(targetVariant, langVariant) {
+	if (targetVariant === "hans") return langVariant === "hans";
+	if (targetVariant === "hant" || targetVariant === "zh") {
+		return langVariant === "hant" || langVariant === "zh";
+	}
+	return false;
+}
+
 /**
  * §4.9 pageLangIsZh 偵測（P2）：main() 一次呼叫、餵給 makeContext，供 R9 already-target gate 用。
- * 純函式：優先讀 documentElement 的 lang（zh-Hant/zh-TW/zh-HK/裸 zh → true；zh-CN/zh-Hans → false，
- * 簡中頁仍需譯成目標 zh-Hant；明確非 zh 語碼 → false）；缺 lang 屬性才退回取樣文字 heuristic
- * （純漢字、無假名/諺文 → 視為中文頁，同 R9 逐段判斷邏輯）。
+ * 純函式：優先讀 documentElement 的 lang，經 classifyZhVariant 歸類——繁體與裸 `zh` → true；
+ * 簡體、認不出書寫系統、非中文語碼 → false（皆不落到取樣 heuristic）；缺 lang 屬性才退回取樣文字
+ * heuristic（純漢字、無假名/諺文 → 視為中文頁，同 R9 逐段判斷邏輯）。
+ *
+ * ⚠ 本函式不看目標語，而它餵的是**整頁級**的 already-target gate——等同寫死「目標語是繁中」。
+ * `targetLang` 今天無處配置（`makeContext` 預設 `zh-Hant`）故不現形；一旦可設定，繁中頁配簡中或
+ * 日文目標會整頁判已達標而一段都不翻。修法是把目標語一併傳進來、改用 `zhVariantSatisfies`
+ * 比對兩邊變體，但那要動 `makeContext`／`main()` 的參數傳遞，屬另案。
+ *
  * @param {string | null | undefined} htmlLang document.documentElement 的 lang 屬性
  * @param {string} [sample] 缺 lang 屬性時的取樣文字（如 document.body.textContent 片段；呼叫端截斷）
  * @returns {boolean}
@@ -236,9 +316,8 @@ function isFilenameOnly(t) {
 function detectPageLangIsZh(htmlLang, sample = "") {
 	const lang = htmlLang?.toLowerCase().trim();
 	if (lang) {
-		if (lang === "zh-cn" || lang.startsWith("zh-hans")) return false;
-		return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw")
-			|| lang.startsWith("zh-hk") || lang.startsWith("zh-mo"); // 繁中變體集與 isTraditionalChineseTarget 同步
+		const variant = classifyZhVariant(lang);
+		return variant === "hant" || variant === "zh";
 	}
 	return RE_HAS_HAN.test(sample) && !RE_HAS_KANA.test(sample) && !RE_HAS_HANGUL.test(sample);
 }
@@ -388,19 +467,24 @@ function respectsTranslateNo(el) {
 	return !BULK_TRANSLATE_NO_TAGS.has(el.tagName);
 }
 
-/** §3.6 lang 自身為目標語（只看自身、不繼承祖先）。依傳入 targetLang 判斷，非硬編 zh。 */
+/**
+ * §3.6 lang 自身為目標語（只看自身、不繼承祖先）。依傳入 targetLang 判斷，非硬編 zh。
+ *
+ * zh 目標一律走 classifyZhVariant + zhVariantSatisfies，不逐個目標語碼列舉分支。列舉式寫法會
+ * 讓沒被列到的中文目標語（`zh-HK`／`zh-MO`／`zh-SG` 等）掉進底下的 primary subtag 比對，於是
+ * 頁面上每一個標了任何 `zh-*` 的段——包含簡中段——都被判成已達標而整棵跳過。
+ *
+ * @param {Element} el
+ * @param {string} [targetLang]
+ * @returns {boolean}
+ */
 function isAlreadyTargetLang(el, targetLang) {
 	const lang = el.getAttribute("lang")?.toLowerCase().trim();
 	if (!lang || !targetLang) return false;
 	const target = targetLang.toLowerCase().trim();
 	// zh 目標：script 變體需嚴格區分，簡中（zh-CN/zh-Hans）不視為已達繁中目標（待 Apple 支援度實測）。
-	if (target === "zh" || target.startsWith("zh-hant") || target.startsWith("zh-tw")) {
-		if (lang === "zh-cn" || lang.startsWith("zh-hans")) return false;
-		return lang === "zh" || lang.startsWith("zh-hant") || lang.startsWith("zh-tw");
-	}
-	if (target === "zh-cn" || target.startsWith("zh-hans")) {
-		return lang === "zh-cn" || lang.startsWith("zh-hans");
-	}
+	const targetVariant = classifyZhVariant(target);
+	if (targetVariant) return zhVariantSatisfies(targetVariant, classifyZhVariant(lang));
 	// 非 zh 目標：比對 BCP-47 primary language subtag（忽略地區／script 子標籤）。
 	return lang.split("-")[0] === target.split("-")[0];
 }
@@ -1467,7 +1551,7 @@ const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
 	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS,
 	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
-	isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
+	classifyZhVariant, isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
 	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,
 	REPLACE_TITLE_MAX_CHARS,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,

@@ -283,6 +283,8 @@ function classifyZhVariant(tag) {
  *
  * 未指明書寫系統的裸 `zh` 對繁中目標算已達標、對簡中目標不算——沿用既有的非對稱行為、本次不改：
  * 判成已達標會讓該段完全不翻，往「不翻」放寬需要 Apple 支援度實測撐腰。
+ * ⚠ 這條分支的代價**不只一個方向**：`isTraditionalChineseTarget` 也走本函式，故
+ * `targetVariant === "zh"` 同時控制簡→繁的就地取代軸——動它要連破壞性那一面一起看。
  *
  * `unknown`（含目標語自己認不出書寫系統時）一律不算已達標：多送一次翻譯，不吃掉該段。
  *
@@ -518,7 +520,9 @@ function isAlreadyTargetLang(el, targetLang) {
  * 人工同步，而漂掉的那一側不會有人發現——`zh-MO` 曾經就是漂掉的那一個。前綴比對本身也錯得
  * 兩頭都有：`zh_TW`（底線形，Apple 的 locale identifier 形狀）與 `zh-cmn-Hant-TW`（extlang 形）
  * 明明是繁體卻判 false；`zh-TWx`／`zh-hantx` 這種只是前綴恰好撞上的畸形標籤反而判 true。
- * 前者讓簡→繁就地取代整條軸永不觸發，後者讓它在認不出的標籤下反而開著。
+ * 前者讓簡→繁就地取代整條軸永不觸發，後者讓它在認不出的標籤下反而開著。前綴比對也吃不下
+ * 「script 子標籤位置無關、勝過地區」這條：`zh-TW-Hans` 明寫 Hans 卻被地區前綴判成繁體、
+ * `zh-CN-Hant` 反之，改走分類器後一律由 script 翻案地區提示。
  *
  * 目標語今天恆為預設值（`zh-Hant`）、行為對現有語碼集等價；目標語一旦可設定才會現形。
  * @param {string} [targetLang]

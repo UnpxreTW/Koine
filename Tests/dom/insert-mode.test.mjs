@@ -397,8 +397,9 @@ test("isTraditionalChineseTarget 語碼邊界", () => {
 });
 
 // 本函式改走 classifyZhVariant 之前是獨立的字串前綴表，與整頁／段級的變體判定有實測分歧。
-// 期望值一律寫成字面常數、不從 classifyZhVariant 推導——推導式期望值會與實作一起漂移，
-// 把本函式改回前綴表時照樣全綠。
+// 期望值一律寫成字面常數、不從 classifyZhVariant 推導——推導式期望值會跟著分類器一起漂：
+// 分類器自己被改壞（例如 ZH_HANT_REGIONS 掉了 `mo`）時，期望值與實際值同步變動、照樣全綠。
+// 字面常數才釘得住這組定義本身。
 test("isTraditionalChineseTarget 與變體分類器同一組定義：畸形與非正規標籤不再兩頭錯", () => {
 	// 前綴表判 false、實為繁體：底線形是 Apple locale identifier 的形狀，extlang 形合 BCP-47。
 	for (const t of ["zh_TW", "zh_HK", "zh_MO", "zh-cmn-Hant-TW"]) {
@@ -418,9 +419,9 @@ test("isTraditionalChineseTarget 與變體分類器同一組定義：畸形與�
 	assert.equal(koine.isTraditionalChineseTarget("  ZH-Tw  "), true, "大小寫與空白應正規化後判定");
 });
 
-test("目標語變體判定直接決定語言對軸開關：zh_TW 觸發 replace、zh-TWx 退回並列", () => {
-	// 純函式那層只證判定值；這條證它真的傳導到 insertMode——目標語一旦可設定，
-	// 前綴表的兩個方向各自對應一種使用者可見的失效：`zh_TW` 下簡→繁就地取代永不觸發、
+test("目標語變體判定傳導到語言對軸：zh_TW／zh-cmn-Hant-TW 觸發 replace、zh-TWx 退回並列", () => {
+	// 純函式那層只證判定值；這條證它真的傳導到 insertMode 的語言對軸——目標語一旦可設定，
+	// 前綴表的兩個方向各自對應一種使用者可見的失效：`zh_TW` 下簡→繁這條軸永不觸發、
 	// `zh-TWx` 下反而開著（而該標籤根本認不出書寫系統）。
 	const doc = () => docFrom(`<p id="p" lang="zh-CN">这是简体中文段落。</p>`);
 	assert.equal(

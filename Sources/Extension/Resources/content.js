@@ -299,27 +299,44 @@ function zhVariantSatisfies(targetVariant, langVariant) {
 }
 
 /**
+ * 目標語預設值。`makeContext` 與 `main()` 共用同一份常數——`detectPageLangIsZh` 的判定必須與
+ * `ctx.targetLang` 同源，兩處各寫一次字面值就是讓它們漂開的路。
+ */
+const DEFAULT_TARGET_LANG = "zh-Hant";
+
+/**
  * §4.9 pageLangIsZh 偵測（P2）：main() 一次呼叫、餵給 makeContext，供 R9 already-target gate 用。
- * 純函式：優先讀 documentElement 的 lang，經 classifyZhVariant 歸類——繁體與裸 `zh` → true；
- * 簡體、認不出書寫系統、非中文語碼 → false（皆不落到取樣 heuristic）；缺 lang 屬性才退回取樣文字
- * heuristic（純漢字、無假名/諺文 → 視為中文頁，同 R9 逐段判斷邏輯）。
  *
- * ⚠ 本函式不看目標語，而它餵的是**整頁級**的 already-target gate——等同寫死「目標語是繁中」。
- * `targetLang` 今天無處配置（`makeContext` 預設 `zh-Hant`）故不現形；一旦可設定，繁中頁配簡中或
- * 日文目標會整頁判已達標而一段都不翻。修法是把目標語一併傳進來、改用 `zhVariantSatisfies`
- * 比對兩邊變體，但那要動 `makeContext`／`main()` 的參數傳遞，屬另案。
+ * 回傳的是**整頁級**的「已達目標語」判定，故必須看目標語：頁面 lang 與 targetLang 兩邊都過
+ * `classifyZhVariant`，再由 `zhVariantSatisfies` 比對書寫變體（與段級 `isAlreadyTargetLang` 同一
+ * 條判準，只是輸入來自 `<html lang>` 而非元素）。
+ *
+ * 三條分支：
+ * 1. **目標語非中文**（`ja`／`en`…）→ 恆 false。R9 gate 只認漢字、表達不了「這頁已是日文」，對非中文
+ *    目標把整頁級豁免關掉才安全；段級判定仍由 `isAlreadyTargetLang` 照常處理。
+ * 2. **有 lang 屬性** → 只信標籤，不落到取樣 heuristic（簡體、認不出書寫系統、非中文語碼皆回 false）。
+ * 3. **缺 lang 屬性** → 取樣文字 heuristic（含漢字、無假名／諺文 → 視為中文頁，同 R9 逐段邏輯）。
+ *    內容偵測分不出簡繁，故只能得到裸 `zh` 這個「未指明書寫系統」的強度，一樣交給
+ *    `zhVariantSatisfies` 裁決。⚠ **這條分支的兩側代價不對稱**：簡中目標下不豁免（多送一次翻譯，
+ *    安全）；繁中目標下沿用裸 `zh` 的放行，於是**沒有 `<html lang>` 的簡體站會整頁被判已達標而
+ *    不譯**。此為既有行為、非本次引入；要收掉它得引入簡繁字形偵測，屬另一條軸。
  *
  * @param {string | null | undefined} htmlLang document.documentElement 的 lang 屬性
  * @param {string} [sample] 缺 lang 屬性時的取樣文字（如 document.body.textContent 片段；呼叫端截斷）
+ * @param {string} [targetLang] 目標語；預設與 `makeContext` 同源
  * @returns {boolean}
  */
-function detectPageLangIsZh(htmlLang, sample = "") {
+function detectPageLangIsZh(htmlLang, sample = "", targetLang = DEFAULT_TARGET_LANG) {
+	// falsy 一律回退預設值，對齊 `makeContext` 的 `opts.targetLang || DEFAULT_TARGET_LANG`：
+	// 參數預設值只擋 undefined，空字串會讓同一份 opts 在兩處得出不同目標語。
+	const targetVariant = classifyZhVariant(targetLang || DEFAULT_TARGET_LANG);
+	if (!targetVariant) return false;
 	const lang = htmlLang?.toLowerCase().trim();
-	if (lang) {
-		const variant = classifyZhVariant(lang);
-		return variant === "hant" || variant === "zh";
-	}
-	return RE_HAS_HAN.test(sample) && !RE_HAS_KANA.test(sample) && !RE_HAS_HANGUL.test(sample);
+	if (lang) return zhVariantSatisfies(targetVariant, classifyZhVariant(lang));
+	// 「含漢字且無假名／諺文」——與 R9 同一套述詞，非「全為漢字」。
+	const sampleLooksZh = RE_HAS_HAN.test(sample)
+		&& !RE_HAS_KANA.test(sample) && !RE_HAS_HANGUL.test(sample);
+	return sampleLooksZh && zhVariantSatisfies(targetVariant, "zh");
 }
 
 // ============================================================================
@@ -367,7 +384,7 @@ function browserGetStyle(el, cache) {
 function makeContext(opts = {}) {
 	const cache = opts._styleCache || new WeakMap();
 	return {
-		targetLang: opts.targetLang || "zh-Hant",
+		targetLang: opts.targetLang || DEFAULT_TARGET_LANG,
 		pageLangIsZh: opts.pageLangIsZh ?? false,
 		getStyle: opts.getStyle || ((el) => browserGetStyle(el, cache)),
 		_styleCache: cache,
@@ -491,11 +508,11 @@ function isAlreadyTargetLang(el, targetLang) {
 
 /**
  * §3.6 目標語是否為繁中（`insertMode` 語言對軸用）。
- * 收 `zh-hk` / `zh-mo`：兩者慣用繁體字，與 `detectPageLangIsZh` 用同一組繁中變體集（該處已一併補上 `zh-mo`）。
- * ⚠ 已知既有落差（非本函式造成）：`isAlreadyTargetLang` 對非 `zh` / `zh-hant` / `zh-tw` 的
- * 目標語會落到 BCP-47 primary subtag 比對，`zh-HK` 目標下 `lang="zh-CN"` 的段會被判成
- * 「已達目標語」而整棵跳，輪不到本軸。今天不現形（`makeContext` 硬編 `zh-Hant` 預設、
- * targetLang 無處配置），目標語一旦可選就要一起修。
+ * 收 `zh-hk` / `zh-mo`：兩者慣用繁體字。
+ * ⚠ 本函式是獨立的字串前綴表、**不是**走 `classifyZhVariant`，故與整頁／段級的變體判定有分歧：
+ * `zh_TW`（底線形）與 `zh-cmn-Hant-TW`（extlang 形）在分類器是 `hant`、在這裡是 false；`zh-TWx`
+ * 反之。今天不現形（targetLang 恆為預設值），目標語一旦可設定要改走
+ * `zhVariantSatisfies(classifyZhVariant(t), "hant")` 對齊。
  * @param {string} [targetLang]
  */
 function isTraditionalChineseTarget(targetLang) {
@@ -1529,7 +1546,12 @@ function main() {
 	const htmlLang = document.documentElement.getAttribute("lang");
 	// 無 lang 屬性才取樣（避免無謂 textContent 讀取）；純讀不觸發 reflow。
 	const sample = htmlLang ? "" : (document.body?.textContent || "").slice(0, 500);
-	const ctx = makeContext({ pageLangIsZh: detectPageLangIsZh(htmlLang, sample) });
+	// targetLang 先取出再一起傳：整頁級 gate 的判定與 ctx.targetLang 必須是同一個值。
+	const targetLang = DEFAULT_TARGET_LANG;
+	const ctx = makeContext({
+		targetLang,
+		pageLangIsZh: detectPageLangIsZh(htmlLang, sample, targetLang),
+	});
 	const segments = collectSegments(document.body, ctx, { walkId: 1 });
 	if (!segments.length) return;
 	const from = htmlLang || undefined;
@@ -1549,7 +1571,7 @@ if (typeof document !== "undefined" && typeof browser !== "undefined") {
 
 const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
-	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS,
+	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS, DEFAULT_TARGET_LANG,
 	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
 	classifyZhVariant, isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
 	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,

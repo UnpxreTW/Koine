@@ -396,6 +396,47 @@ test("isTraditionalChineseTarget 語碼邊界", () => {
 	}
 });
 
+// 本函式改走 classifyZhVariant 之前是獨立的字串前綴表，與整頁／段級的變體判定有實測分歧。
+// 期望值一律寫成字面常數、不從 classifyZhVariant 推導——推導式期望值會與實作一起漂移，
+// 把本函式改回前綴表時照樣全綠。
+test("isTraditionalChineseTarget 與變體分類器同一組定義：畸形與非正規標籤不再兩頭錯", () => {
+	// 前綴表判 false、實為繁體：底線形是 Apple locale identifier 的形狀，extlang 形合 BCP-47。
+	for (const t of ["zh_TW", "zh_HK", "zh_MO", "zh-cmn-Hant-TW"]) {
+		assert.equal(koine.isTraditionalChineseTarget(t), true, `${t} 是繁體、應判為繁中目標`);
+	}
+	// 前綴表判 true、實為「只是前綴恰好撞上」：多一個字母就不再是同一個子標籤。
+	for (const t of ["zh-TWx", "zh-hantx", "zh-hkx", "zh-mox"]) {
+		assert.equal(koine.isTraditionalChineseTarget(t), false, `${t} 認不出書寫系統、不應判為繁中目標`);
+	}
+	// script 子標籤勝過地區，且位置無關——`zh-hk-hans` 明寫 Hans，地區提示不得翻案。
+	assert.equal(koine.isTraditionalChineseTarget("zh-hk-hans"), false, "明寫 Hans 應判簡體、不吃地區提示");
+	// 認不出書寫系統的中文標籤與非中文標籤一律不算：兩者都不能開啟破壞性的就地取代。
+	for (const t of ["zh-Latn", "zh-Hani", "zh-CHS", "zh-SG", "yue-HK", "ja-JP"]) {
+		assert.equal(koine.isTraditionalChineseTarget(t), false, `${t} 不應判為繁中目標`);
+	}
+	// 大小寫與前後空白照舊吃得下（沿用分類器的正規化）。
+	assert.equal(koine.isTraditionalChineseTarget("  ZH-Tw  "), true, "大小寫與空白應正規化後判定");
+});
+
+test("目標語變體判定直接決定語言對軸開關：zh_TW 觸發 replace、zh-TWx 退回並列", () => {
+	// 純函式那層只證判定值；這條證它真的傳導到 insertMode——目標語一旦可設定，
+	// 前綴表的兩個方向各自對應一種使用者可見的失效：`zh_TW` 下簡→繁就地取代永不觸發、
+	// `zh-TWx` 下反而開著（而該標籤根本認不出書寫系統）。
+	const doc = () => docFrom(`<p id="p" lang="zh-CN">这是简体中文段落。</p>`);
+	assert.equal(
+		collectWith(doc(), { targetLang: "zh_TW" })[0].anchor.insertMode, "replace",
+		"底線形繁中目標應照常觸發就地取代"
+	);
+	assert.equal(
+		collectWith(doc(), { targetLang: "zh-cmn-Hant-TW" })[0].anchor.insertMode, "replace",
+		"extlang 形繁中目標應照常觸發就地取代"
+	);
+	assert.equal(
+		collectWith(doc(), { targetLang: "zh-TWx" })[0].anchor.insertMode, "after-segment",
+		"認不出書寫系統的目標語不得開啟破壞性的就地取代"
+	);
+});
+
 test("effectiveLangOf：自身優先於祖先、查無回 null", () => {
 	const doc = docFrom(`<div lang="zh-CN"><p id="self" lang="EN "> x </p><p id="inherit">y</p></div>`);
 	assert.equal(koine.effectiveLangOf(doc.getElementById("self")), "en", "自身 lang 應勝出、且已小寫 trim");

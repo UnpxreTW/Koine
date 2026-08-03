@@ -74,7 +74,7 @@ test("空值與無效輸入 → null", () => {
 
 // ── 呼叫端的絕對期望值（字面常數、不從分類器推導）────────────────────────────
 
-/** lang 屬性 → detectPageLangIsZh 的期望值。 */
+/** lang 屬性 → 繁中目標（預設）下 detectPageLangIsZh 的期望值。 */
 const PAGE_LANG_IS_ZH = [
 	["zh-Hant", true], ["zh-TW", true], ["zh-HK", true], ["zh-MO", true], ["zh", true],
 	["ZH-HANT-TW", true], ["zh_TW", true],
@@ -87,6 +87,47 @@ const PAGE_LANG_IS_ZH = [
 test("detectPageLangIsZh：整頁 lang 判定（絕對期望值）", () => {
 	for (const [tag, expected] of PAGE_LANG_IS_ZH) {
 		assert.equal(koine.detectPageLangIsZh(tag), expected, `detectPageLangIsZh("${tag}")`);
+	}
+});
+
+/**
+ * lang 屬性 → 簡中目標下 detectPageLangIsZh 的期望值。
+ * 與上表逐列相反的那幾格（繁中頁）正是「整頁級 gate 不看目標語」的失效模式：修前恆取上表答案，
+ * 於是繁中頁配簡中目標時整頁判已達標、一段都不翻。
+ */
+const PAGE_LANG_IS_ZH_FOR_HANS = [
+	["zh-Hans", true], ["zh-CN", true], ["zh-SG", true], ["zh-MY", true], ["zh-cmn-Hans-CN", true],
+	["zh-Hans-MO", true],
+	["zh-Hant", false], ["zh-TW", false], ["zh-HK", false], ["zh-MO", false],
+	["zh", false, "未指明書寫系統不足以斷定已是簡體"],
+	["zh-CHS", false], ["zh-Latn", false], ["zh-XX", false],
+	["en", false], ["ja", false],
+];
+
+/** 所有簡中目標語碼；判定粒度＝書寫系統，故它們對同一批 lang 必須給出同一組答案。 */
+const HANS_TARGETS = ["zh-Hans", "zh-CN", "zh-SG", "zh-Hans-CN"];
+
+test("detectPageLangIsZh：簡中目標下的整頁 lang 判定（絕對期望值）", () => {
+	for (const [tag, expected, why] of PAGE_LANG_IS_ZH_FOR_HANS) {
+		for (const target of HANS_TARGETS) {
+			assert.equal(
+				koine.detectPageLangIsZh(tag, "", target),
+				expected,
+				`lang=${tag} target=${target}${why ? `（${why}）` : ""}`,
+			);
+		}
+	}
+});
+
+test("detectPageLangIsZh：非中文目標關閉整頁級豁免（絕對期望值）", () => {
+	for (const [tag] of PAGE_LANG_IS_ZH) {
+		for (const target of ["ja", "en", "ko", "en-US"]) {
+			assert.equal(
+				koine.detectPageLangIsZh(tag, "", target),
+				false,
+				`lang=${tag} target=${target}`,
+			);
+		}
 	}
 });
 

@@ -398,8 +398,8 @@ test("isTraditionalChineseTarget 語碼邊界", () => {
 
 // 本函式改走 classifyZhVariant 之前是獨立的字串前綴表，與整頁／段級的變體判定有實測分歧。
 // 期望值一律寫成字面常數、不從 classifyZhVariant 推導——推導式期望值會跟著分類器一起漂：
-// 分類器自己被改壞（例如 ZH_HANT_REGIONS 掉了 `mo`）時，期望值與實際值同步變動、照樣全綠。
-// 字面常數才釘得住這組定義本身。
+// 分類器自己被改壞（例如 ZH_HANT_REGIONS 掉了 `mo`）時，期望值與實際值同步變動、這條測試
+// 照樣全綠（得靠分類器自己那組測試才抓得到）。字面常數才釘得住這組定義本身。
 test("isTraditionalChineseTarget 與變體分類器同一組定義：畸形與非正規標籤不再兩頭錯", () => {
 	// 前綴表判 false、實為繁體：底線形是 Apple locale identifier 的形狀，extlang 形合 BCP-47。
 	for (const t of ["zh_TW", "zh_HK", "zh_MO", "zh-cmn-Hant-TW"]) {
@@ -411,8 +411,9 @@ test("isTraditionalChineseTarget 與變體分類器同一組定義：畸形與�
 	}
 	// script 子標籤勝過地區，且位置無關——`zh-hk-hans` 明寫 Hans，地區提示不得翻案。
 	assert.equal(koine.isTraditionalChineseTarget("zh-hk-hans"), false, "明寫 Hans 應判簡體、不吃地區提示");
-	// 認不出書寫系統的中文標籤與非中文標籤一律不算：兩者都不能開啟破壞性的就地取代。
-	for (const t of ["zh-Latn", "zh-Hani", "zh-CHS", "zh-SG", "yue-HK", "ja-JP"]) {
+	// 三類都不算、也都不能開啟破壞性的就地取代：簡中目標（`zh-SG` 由地區判 hans）、
+	// 認不出書寫系統的中文標籤（`zh-Latn`／`zh-Hani`／`zh-CHS`）、非中文標籤（`yue-HK`／`ja-JP`）。
+	for (const t of ["zh-SG", "zh-Latn", "zh-Hani", "zh-CHS", "yue-HK", "ja-JP"]) {
 		assert.equal(koine.isTraditionalChineseTarget(t), false, `${t} 不應判為繁中目標`);
 	}
 	// 大小寫與前後空白照舊吃得下（沿用分類器的正規化）。
@@ -424,16 +425,16 @@ test("目標語變體判定傳導到語言對軸：zh_TW／zh-cmn-Hant-TW 觸發
 	// 前綴表的兩個方向各自對應一種使用者可見的失效：`zh_TW` 下簡→繁這條軸永不觸發、
 	// `zh-TWx` 下反而開著（而該標籤根本認不出書寫系統）。
 	const doc = () => docFrom(`<p id="p" lang="zh-CN">这是简体中文段落。</p>`);
+	// 先釘採集結果的段數：採集若退化成 0 段，[0] 會以 TypeError 死掉、讀不出是哪裡壞的。
+	const insertModeFor = (targetLang) => {
+		const segments = collectWith(doc(), { targetLang });
+		assert.equal(segments.length, 1, `${targetLang} 應採到剛好一段`);
+		return segments[0].anchor.insertMode;
+	};
+	assert.equal(insertModeFor("zh_TW"), "replace", "底線形繁中目標應照常觸發就地取代");
+	assert.equal(insertModeFor("zh-cmn-Hant-TW"), "replace", "extlang 形繁中目標應照常觸發就地取代");
 	assert.equal(
-		collectWith(doc(), { targetLang: "zh_TW" })[0].anchor.insertMode, "replace",
-		"底線形繁中目標應照常觸發就地取代"
-	);
-	assert.equal(
-		collectWith(doc(), { targetLang: "zh-cmn-Hant-TW" })[0].anchor.insertMode, "replace",
-		"extlang 形繁中目標應照常觸發就地取代"
-	);
-	assert.equal(
-		collectWith(doc(), { targetLang: "zh-TWx" })[0].anchor.insertMode, "after-segment",
+		insertModeFor("zh-TWx"), "after-segment",
 		"認不出書寫系統的目標語不得開啟破壞性的就地取代"
 	);
 });

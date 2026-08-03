@@ -113,6 +113,20 @@ private final class BridgeTranslatorTests {
 		#expect((out["error"] as? String)?.contains("不支援") == true, "應給不支援組合提示")
 	}
 
+	/// 預查 undetermined（可用性查詢逾時／被取消）：**不早退**，照常進 translate 回 `{id, text}`。
+	/// 這條釘住「預查查不出來時讓開」——失去它，可用性端點慢而翻譯本身正常的頁面會整頁譯不出來。
+	/// 兩種回歸的偵測分工：早退條件被改成「非 installed 就擋」→ 只有本條會紅（`actionableMessage`
+	/// 那層看不到呼叫端）；`.undetermined` 又生出可行動訊息 → 本條與 `undetermined yields no
+	/// message so it cannot block translation` 一起紅。
+	@Test
+	private func `status undetermined falls through to translate`() async {
+		let translator: BridgeTranslator = .init(engine: MockEngine(statusResult: .undetermined))
+		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
+		#expect(out["id"] as? String == "k1-0")
+		#expect(out["error"] == nil, "查不出來不是失敗、不該擋下翻譯")
+		#expect(out["text"] as? String == "譯:Hello", "應照常走到 translate")
+	}
+
 	/// 不帶 from/to：走預設 en → zh-Hant、installed → 成功 `{id, text}`。
 	@Test
 	private func `default from to succeeds`() async {

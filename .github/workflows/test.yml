@@ -14,6 +14,9 @@ permissions:
 jobs:
   test:
     runs-on: macos-latest
+    # 並發／門閂類測試若回歸，失敗形態是「掛住」而不是「斷言失敗」——沒有這行就會用掉
+    # runner 預設的 360 分鐘上限，且錯誤只顯示為 job cancelled、看不出是哪條測試。
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: Pin Xcode 26.3

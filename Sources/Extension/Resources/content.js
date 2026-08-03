@@ -508,18 +508,28 @@ function isAlreadyTargetLang(el, targetLang) {
 
 /**
  * §3.6 目標語是否為繁中（`insertMode` 語言對軸用）。
- * 收 `zh-hk` / `zh-mo`：兩者慣用繁體字。
- * ⚠ 本函式是獨立的字串前綴表、**不是**走 `classifyZhVariant`，故與整頁／段級的變體判定有分歧：
- * `zh_TW`（底線形）與 `zh-cmn-Hant-TW`（extlang 形）在分類器是 `hant`、在這裡是 false；`zh-TWx`
- * 反之。今天不現形（targetLang 恆為預設值），目標語一旦可設定要改走
- * `zhVariantSatisfies(classifyZhVariant(t), "hant")` 對齊。
+ *
+ * 走 `classifyZhVariant` + `zhVariantSatisfies`、**不自備語碼表**：問法是「繁體寫成的內容滿不滿足
+ * 這個目標語」，答案為真即代表該目標語收繁體字——與段級 `isAlreadyTargetLang`、整頁級
+ * `detectPageLangIsZh` 收斂到同一組變體定義。裸 `zh`（未指明書寫系統）照 `zhVariantSatisfies`
+ * 既有的非對稱行為算繁中目標。
+ *
+ * **為什麼不留字串前綴表**：這個判定與另兩處是同一組知識（哪些語言標籤算繁體），各自列舉就得
+ * 人工同步，而漂掉的那一側不會有人發現——`zh-MO` 曾經就是漂掉的那一個。前綴比對本身也錯得
+ * 兩頭都有：`zh_TW`（底線形，Apple 的 locale identifier 形狀）與 `zh-cmn-Hant-TW`（extlang 形）
+ * 明明是繁體卻判 false；`zh-TWx`／`zh-hantx` 這種只是前綴恰好撞上的畸形標籤反而判 true。
+ * 前者讓簡→繁就地取代整條軸永不觸發，後者讓它在認不出的標籤下反而開著。
+ *
+ * 目標語今天恆為預設值（`zh-Hant`）、行為對現有語碼集等價；目標語一旦可設定才會現形。
  * @param {string} [targetLang]
  */
 function isTraditionalChineseTarget(targetLang) {
-	const t = targetLang?.toLowerCase().trim();
-	if (!t) return false;
-	return t === "zh" || t.startsWith("zh-hant") || t.startsWith("zh-tw")
-		|| t.startsWith("zh-hk") || t.startsWith("zh-mo");
+	const targetVariant = classifyZhVariant(targetLang);
+	// 非中文標籤的早退是**型別守衛**、不是行為分支：`zhVariantSatisfies` 收 `ZhVariant`（不含
+	// null），而它對 null 本來就落到末行回 false。故拿掉它沒有測試會紅——留著是為了不讓
+	// 「這個函式對非中文目標語回什麼」變成依賴另一支函式末行的隱含約定。
+	if (!targetVariant) return false;
+	return zhVariantSatisfies(targetVariant, "hant");
 }
 
 /** §3.6 語碼是否為簡中變體。 @param {string|null|undefined} lang 已小寫 trim 的語碼 */

@@ -1003,7 +1003,7 @@ function collectSegments(root, ctx, opts = {}) {
 	}
 
 	function makeSegmentFromBuffer(buf, blockNode) {
-		const { text, spans } = extractText(buf);
+		const { text, spans } = extractText(buf, labelOf);
 		const source = normalizeSource(text);
 		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
 		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh });
@@ -1107,19 +1107,29 @@ function makeAnchor(buf, blockNode, insertMode = "after-segment") {
 
 /**
  * @param {Node[]} buf
+ * @param {((node: Node) => NodeLabel)} [labelOf]  走訪層算好的 label 查詢函式。
+ *   **採集路徑一律要傳**——沒有它，這裡的遞迴取不到 §3 的過濾結果（見 appendNode 的註解）。
+ *   省略只保留給「單獨拿這支工具函式抽文字」的呼叫端，該路徑不套用任何過濾。
  * @returns {{ text: string, spans: ProtectedSpan[] }}
  */
-function extractText(buf) {
+function extractText(buf, labelOf) {
 	let text = "";
 	/** @type {ProtectedSpan[]} */
 	const spans = [];
 	for (const node of buf) {
-		text = appendNode(node, text, spans);
+		text = appendNode(node, text, spans, labelOf);
 	}
 	return { text, spans };
 }
 
-function appendNode(node, text, spans) {
+/**
+ * @param {Node} node
+ * @param {string} text
+ * @param {ProtectedSpan[]} spans
+ * @param {((node: Node) => NodeLabel)} [labelOf]
+ * @returns {string}
+ */
+function appendNode(node, text, spans, labelOf) {
 	if (node.nodeType === NODE_TEXT) return text + (node.nodeValue || "");
 	if (node.nodeType !== NODE_ELEMENT) return text;
 	const el = /** @type {Element} */ (node);
@@ -1134,9 +1144,21 @@ function appendNode(node, text, spans) {
 		return text;
 	}
 	// 其餘 inline 元素：遞迴子節點（ruby base、巢狀 inline）。`display:contents` 容器不會整個進
-	// buffer（走訪層已就地攤平），巢狀在 buffer 內某個 inline 底下時由這條遞迴取到同樣的文字。
+	// buffer（走訪層已就地攤平），巢狀在 buffer 內某個 inline 底下時由這條遞迴取到。
+	//
+	// ⚠ **下面那行 `labelOf` 判斷是隱私過濾的一環、不是可省的最佳化**：這條遞迴自己不跑
+	// `classifyNode`，對元素只認得 tagName。**在 `labelOf` 傳進來之前**它什麼都不跳，於是同一份
+	// markup 會因為擺在哪個位置而行為不同——直接掛在 block 容器底下被走訪層濾掉，包進一層 `<em>`
+	// 就整棵被取進 source 送出去。漏的正是明示不該外送的東西：`display:none`／`hidden`／
+	// `aria-hidden`／視覺隱藏類 class／`translate="no"`／`contenteditable` 的使用者輸入／
+	// `<script>` 原始碼／自家插回的舊譯文。**現已改成查走訪層算好的 disp**：`labelOf` 先讀
+	// `walkAndLabel` 的 WeakMap，走訪過的節點不會為此多跑一次 computed style；命中 SKIP_SUBTREE
+	// 的子樹整棵不取。
+	// 另注意 `labelOf` 是選用參數、且以 `labelOf &&` 守衛 ⇒ 沒傳就整條過濾靜默失效（不報錯、
+	// 型別也擋不住）。採集路徑（`makeSegmentFromBuffer`）一律要傳。
 	for (const child of childNodes(el)) {
-		text = appendNode(child, text, spans);
+		if (labelOf && labelOf(child).disp === "SKIP_SUBTREE") continue;
+		text = appendNode(child, text, spans, labelOf);
 	}
 	return text;
 }

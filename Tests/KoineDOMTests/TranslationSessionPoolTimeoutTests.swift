@@ -11,48 +11,6 @@ import Koine
 import Testing
 import Translation
 
-// MARK: - HangGate
-
-/// 可控的「永不返回」閘：翻譯樁在此懸掛，且**不理會取消**——`withCheckedContinuation` 沒有取消路徑，
-/// 正好模擬 translate 卡在不可取消的跨程序等待（逾時保護要解的就是這一型）。
-/// 用長 `Task.sleep` 當卡死樁測不到這一型：那種樁一 cancel 就收工，保護層拿掉照樣綠。
-/// 測試收尾呼叫 `release()` 讓樁收工，不留常駐任務污染同進程的其他測試。
-private final class HangGate: @unchecked Sendable {
-
-	/// 懸掛直到 `release()` 被呼叫；已放行過則立即返回。
-	func wait() async {
-		await withCheckedContinuation { continuation in
-			lock.lock()
-			guard !isReleased else {
-				lock.unlock()
-				continuation.resume()
-				return
-			}
-			waiters.append(continuation)
-			lock.unlock()
-		}
-	}
-
-	/// 放行所有懸掛者，並讓之後的 `wait()` 直接通過。
-	func release() {
-		lock.lock()
-		isReleased = true
-		let pending: [CheckedContinuation<Void, Never>] = waiters
-		waiters.removeAll()
-		lock.unlock()
-		for continuation in pending { continuation.resume() }
-	}
-
-	/// 保護以下狀態的鎖。
-	private let lock: NSLock = .init()
-
-	/// 尚未放行的懸掛者。
-	private var waiters: [CheckedContinuation<Void, Never>] = []
-
-	/// 是否已放行。
-	private var isReleased: Bool = false
-}
-
 // MARK: - TranslateLedger
 
 /// 執行緒安全的樁帳本：記進場序號（供「只讓第一件卡死」的樁分流）與 session 建構次數

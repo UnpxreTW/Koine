@@ -38,9 +38,9 @@ private final class QueryCounter: @unchecked Sendable {
 
 // MARK: - AppleTranslationEngineStatusTimeoutTests
 
-/// `AppleTranslationEngine.status` 的逾時保護：可用性預查與 `translate` 走同一條跨程序往返、
-/// 同樣可能永不返回，而它**排在每一段翻譯之前**——卡住就是整頁停在預查，連 `translate` 那層
-/// 已有的上限都到不了。
+/// `AppleTranslationEngine.status` 的逾時保護：可用性預查同樣走跨程序往返、同樣可能永不返回，
+/// 而它**排在每一段翻譯之前**——卡住就是整頁停在預查，連 `translate` 那層已有的上限都到不了。
+/// （兩者是不是同一條通道未經驗證，故兩層保護各自成立、互不假設對方。）
 ///
 /// 首條測試在保護層被拿掉時會**掛住而不是失敗**（樁不理會取消），與 `TranslationSessionPool`
 /// 的逾時測試同型，也同樣靠 CI test job 的 `timeout-minutes` 收場。
@@ -118,6 +118,11 @@ private final class AppleTranslationEngineStatusTimeoutTests {
 
 	/// 逾時不進「已知已裝妥」快取，已裝妥則照舊進——服務恢復後下一次查詢必須真的重查，
 	/// 不因一次逾時被永久釘在無從判定；而既有的跳過重查路徑也不因保護層而失效。
+	///
+	/// ⚠ 本測試與 `TranslationSessionPool.shared` 的**預查側**短路門檻耦合：下半段兩次逾時都記進
+	/// 該語言對（`qac-keep`／`qad-keep`）的預查側計數，門檻為預設值時第二次查詢仍會真的送出，
+	/// `hungCounter.count` 才會是 2。門檻若下修到 1，第二次就被預查側短路擋下、根本不查，該斷言
+	/// 會轉紅——屆時要改的是這裡的預期值或改用獨立語言對，不是把短路保護關掉。
 	@Test
 	private func `undetermined is not cached while installed still is`() async {
 		let installedCounter: QueryCounter = .init()

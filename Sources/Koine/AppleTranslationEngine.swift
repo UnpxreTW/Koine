@@ -58,6 +58,9 @@ public struct AppleTranslationEngine: TranslationEngine, Sendable {
 		},
 		availabilityTimeout: Duration = .seconds(5)
 	) {
+		// 同 `TranslationSessionPool.init` 的理由：上限 ≤ 0 會讓每次預查立刻「逾時」、達門檻後
+		// 循環重開窗口而永久短路（預查層形同不存在），且不產生任何錯誤訊號。
+		precondition(availabilityTimeout > .zero, "availabilityTimeout 需大於零")
 		self.availabilityQuery = availabilityQuery
 		self.availabilityTimeout = availabilityTimeout
 	}
@@ -70,13 +73,30 @@ public struct AppleTranslationEngine: TranslationEngine, Sendable {
 	/// 只快取正向結果——`.supported` / `.unsupported` 不快取，見 `TranslationSessionPool` 上的說明；
 	/// `.undetermined` 同樣不快取，服務恢復後下一次查詢就該真的重查、不被一次逾時永久釘死。
 	///
-	/// 逾時保護：`LanguageAvailability` 走的是與 `translate` 同一條跨程序往返，同樣可能永不返回，
-	/// 而本方法**排在每一段翻譯之前**——它卡住，整頁就停在預查、連 `translate` 那層已有的上限
-	/// 都到不了。故查詢帶等待上限，上限先到就放棄等待、回 `.undetermined`。
+	/// 逾時保護：`LanguageAvailability` 同樣走跨程序往返、同樣可能永不返回，而本方法**排在每一段
+	/// 翻譯之前**——它卡住，整頁就停在預查、連 `translate` 那層已有的上限都到不了。故查詢帶等待
+	/// 上限，上限先到就放棄等待、回 `.undetermined`。（兩者是不是同一條通道、會不會一起壞，
+	/// 未經驗證，所以兩層保護各自成立、互不假設對方；短路也因此分成兩顆，見下。）
 	///
 	/// `.undetermined` **不擋路**（`actionableMessage` 對它回 `nil`）：呼叫端照常往下走真正的
 	/// 翻譯，由那層的上限與真實錯誤收場。預查是把常見失敗換成可行動訊息的優化，逾時把它降級成
 	/// 「這次沒幫上忙」即可，不該讓它反過來否決一件翻譯得成的事。
+	///
+	/// 短路保護：連續逾時達門檻後，本方法直接回 `.undetermined`、不再送出注定同命運的查詢；
+	/// 有回應（含已知失敗，只要不是逾時或呼叫端取消）則回報服務仍活著、計數歸零。短路路徑同樣
+	/// 不動 `installedPairs`（短路是「暫時不試」、不是「語言包不見了」）。
+	///
+	/// ⚠ 這顆短路是**預查專屬**的，與 `TranslationSessionPool.translate` 那顆各自獨立（見該型別
+	/// 說明末段）：本方法的逾時只會關掉本方法，**永遠不擋翻譯**。這不是保守，是上一段「不擋路」
+	/// 原則的必然延伸——共用一顆計數時，預查端持續卡住而翻譯本身正常的情況下，健康的 `translate`
+	/// 一次探測機會都拿不到（本 repo 的呼叫端都是先 `status` 後 `translate`，窗口期滿後第一個到的
+	/// 因此是本方法，它再逾時一次就把窗口重新起算），該語言對會永久停用；那正是「憑一個沒查到的
+	/// 答案否決一件做得到的事」，只是換成永久版本。
+	///
+	/// ⚠ 界限：本方法沒有 `translate` 那種 per 語言對門閂，呼叫端並發送出多段時彼此不序列化
+	/// ——同語言對的多筆查詢會各自通過上面的短路檢查後同時在途，短路對「同時在途的那一批」零保護，
+	/// 只擋得住其後才到達的；短路窗口期滿後同理，一個窗口會放進一批而非一件。要收掉它得為預查
+	/// 另立門閂，代價是把每段翻譯前的預查變成序列化瓶頸。
 	public func status(
 		from source: Locale.Language,
 		to target: Locale.Language
@@ -84,14 +104,43 @@ public struct AppleTranslationEngine: TranslationEngine, Sendable {
 		if await TranslationSessionPool.shared.isKnownInstalled(from: source, to: target) {
 			return .installed
 		}
-		let result: LanguagePairStatus = await queryWithTimeout(from: source, to: target)
-		if case .installed = result {
-			await TranslationSessionPool.shared.markInstalled(from: source, to: target)
+		if await TranslationSessionPool.shared.isAvailabilityCircuitOpen(from: source, to: target) {
+			return .undetermined
 		}
-		return result
+		switch await queryWithTimeout(from: source, to: target) {
+		case .result(let status):
+			if case .installed = status {
+				await TranslationSessionPool.shared.markInstalled(from: source, to: target)
+			}
+			await TranslationSessionPool.shared.recordAvailabilityReply(from: source, to: target)
+			return status
+		case .timedOut:
+			await TranslationSessionPool.shared.recordAvailabilityTimeout(from: source, to: target)
+			return .undetermined
+		case .cancelled:
+			// 呼叫端不等了，對服務是否卡住沒有訊號——不記進短路計數的任一邊（同 `TranslationSessionPool
+			// .translate` 的 `CancellationError` 分支，理由詳見該處）。
+			return .undetermined
+		}
 	}
 
-	/// 以 `availabilityTimeout` 為上限跑可用性查詢；上限先到就放棄等待、回 `.undetermined`。
+	/// `queryWithTimeout` 的結果分流，供呼叫端（`status`）分別記入**預查側**短路計數（見
+	/// `TranslationSessionPool` 型別說明末段）——逾時要計數，取消不算，
+	/// 有結果（無論該結果是哪種 `LanguagePairStatus`）代表服務有回應、同樣不算逾時。
+	private enum AvailabilityOutcome {
+
+		/// 查詢在上限內返回。
+		case result(LanguagePairStatus)
+
+		/// 上限先到、放棄等待。
+		case timedOut
+
+		/// 呼叫端 task 被取消。
+		case cancelled
+	}
+
+	/// 以 `availabilityTimeout` 為上限跑可用性查詢；上限先到就放棄等待、回 `.timedOut`
+	/// （呼叫端 `status` 一律轉譯為 `.undetermined`，見該處）。
 	///
 	/// !!!: 與 `TranslationSessionPool.translateWithTimeout` 是同一套非結構化 `Task` 賽跑，
 	/// **刻意各留一份而非抽共用工具**：那邊的操作閉包捕捉非 Sendable 的 `TranslationSession`，
@@ -101,7 +150,7 @@ public struct AppleTranslationEngine: TranslationEngine, Sendable {
 	private func queryWithTimeout(
 		from source: Locale.Language,
 		to target: Locale.Language
-	) async -> LanguagePairStatus {
+	) async -> AvailabilityOutcome {
 		let query: @Sendable (Locale.Language, Locale.Language) async -> LanguagePairStatus = availabilityQuery
 		let limit: Duration = availabilityTimeout
 		let outcomes: AsyncStream<RaceOutcome>
@@ -119,18 +168,16 @@ public struct AppleTranslationEngine: TranslationEngine, Sendable {
 		defer { timer.cancel() }
 		var outcomeIterator: AsyncStream<RaceOutcome>.Iterator = outcomes.makeAsyncIterator()
 		// 串流在本 task 被取消時直接結束（回 nil）——呼叫端已不要答案，同樣不等被放棄的那一件。
-		// 本方法不 throws（協定簽章如此），故取消與逾時收在同一個「無從判定」的值上；兩者對呼叫端
-		// 的意思一致（預查沒給出結論），而 `.undetermined` 不擋路，取消的那條路徑也不會誤導使用者。
 		guard let outcome: RaceOutcome = await outcomeIterator.next() else {
 			work.cancel()
-			return .undetermined
+			return .cancelled
 		}
 		switch outcome {
 		case .settled:
-			return await work.value
+			return .result(await work.value)
 		case .timedOut:
 			work.cancel()
-			return .undetermined
+			return .timedOut
 		}
 	}
 

@@ -21,7 +21,9 @@ public enum LanguagePairStatus: Equatable, Sendable {
 	/// 不支援的組合（含無法識別的語言碼——`Locale.Language(identifier:)` 對亂碼不會失敗）。
 	case unsupported
 
-	/// 可用性查詢未在等待上限內返回，狀態無從判定。
+	/// 可用性預查沒有得出結論，狀態無從判定——三種來源：查詢未在等待上限內返回、呼叫端中途取消、
+	/// 該語言對正短路中而根本沒去查（見 `AppleTranslationEngine.status`）。三者對呼叫端無差別，
+	/// 都是「這次沒幫上忙」。
 	///
 	/// **語義是「預查不做結論」、不是一種失敗**：`actionableMessage` 對本值回 `nil`，呼叫端照常
 	/// 往下走真正的翻譯。預查的職責只是把最常見的兩種失敗換成可行動訊息，查不出來時它該讓開，

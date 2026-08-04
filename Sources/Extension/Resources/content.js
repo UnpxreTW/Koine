@@ -874,9 +874,23 @@ function collectSegments(root, ctx, opts = {}) {
 	}
 	/**
 	 * §2.4 透明穿透：`display:contents` 元素不產生盒，走訪時就地以其子節點取代自身（可巢狀）。
-	 * 攤平發生在組段之前，所以容器內外的 inline 會併進同一段、容器不再是 flush 邊界，段的
-	 * anchor.block 也永遠落在真正有盒的祖先上（無盒元素當 anchor 會讓譯文插到錯位置、
-	 * 且 getBoundingClientRect 全零會被排程誤判成「正在視窗內」）。
+	 * 攤平發生在組段之前，所以容器內外的 inline 會併進同一段、容器不再是 flush 邊界。
+	 *
+	 * ⚠ **適用範圍是有條件的、不是全稱**：只有 `transparent` 為真者會被攤平，而 `transparent`
+	 * 在 `isShallowBlock` 已判 true 時恆為假（見 §2.2 註記處）——FORCE_BLOCK 白名單與
+	 * `role=button` 排在讀 `display` 之前、一律優先（§2.2 / §P4 KO-5）。所以能講的只有
+	 * 「**非** FORCE_BLOCK、**非** `role=button` 的 `display:contents` 容器不再當 anchor」；
+	 * 這兩類容器仍會成為自己的 `anchor.block`，即使 computed display 是 `contents`（無盒）。
+	 *
+	 * 殘留後果照舊要知道：無盒元素當 anchor 時 `getBoundingClientRect()` 全零，於是 `defaultMeasure`
+	 * 落在「相交」分支回 0 → `keyOf` 的 band 與 bucket 皆為 0。也就是**它永遠量不出「已離開視窗」**：
+	 * 不論實際捲到哪裡都照 band 0 計價，因而壓過真正已捲出視窗的段（那些是 band 1）。
+	 * ⚠ 但**無盒這件事不會讓它贏過**同樣在視窗內的段——`keyOf` 回的是 `[band, rank, bucket, order]`，而真正
+	 * 相交的段 band 與 bucket 同樣是 0，勝負因此落在 `rank`（CHROME 段 1、其餘 0）與 `order`
+	 * （文件序）上；同 rank 下，文件序在後的無盒 anchor 仍排在較早的可見段之後。
+	 * 譯文插入位置也可能錯位。
+	 * **這是已知殘留、由測試釘住，不是「不可能發生」。** 要消掉它得先決定「`role=button` 的
+	 * contents 容器該不該有自己的 anchor」，方向與上述兩條既有優先規則相反，屬另一題。
 	 * 回傳 [節點, label] 對，省掉呼叫端重查一次 label。
 	 * @param {Node} node
 	 * @returns {Generator<[Node, NodeLabel]>}

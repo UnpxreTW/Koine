@@ -64,6 +64,9 @@ private final class TranslateLedger: @unchecked Sendable {
 /// 逾時保護若改用 task group 賽跑，前兩條會**卡死而不是失敗**——task group 保證 body 返回前
 /// 所有子任務都已結束，卡死的子任務會把 group 一起綁住。那正是這兩條非測不可的理由，
 /// 也是 CI test job 需要 `timeout-minutes` 的理由（回歸時會掛住、不會自己收工）。
+///
+/// 另有兩條驗的是同一件事的另一面：逾時與取消**不**該波及「已知已裝妥」快取——放棄等待不是
+/// 語言包不見了的證據，兩份快取（session／已裝妥）的失效條件刻意不同。
 private final class TranslationSessionPoolTimeoutTests {
 
 	/// 首件 translate 永不返回（且不理會取消）：該件在上限後以 `TranslationTimeoutError` 收場、
@@ -173,6 +176,70 @@ private final class TranslationSessionPoolTimeoutTests {
 		}
 		let recovered: String = try await pool.translate("後續的一句", from: english, to: hant)
 		#expect(recovered == "後續的一句", "取消後門閂已歸還、後續請求照常完成")
+	}
+
+	/// 逾時**不**清掉「已知已裝妥」快取：放棄等待不是語言包不見了的證據。與本檔第一條互補
+	/// ——那條釘的是 session 快取**要**丟棄（下一件重建一顆），本條釘的是已裝妥快取不該跟著丟。
+	/// 丟掉的代價是下一次 `status` 重新真查 `LanguageAvailability`，服務降級時該查詢回 `.supported`，
+	/// 使用者於是收到「請去下載語言包」——而那個語言包明明已經裝好。
+	@Test
+	private func `a timeout keeps the installed cache`() async {
+		let gate: HangGate = .init()
+		defer { gate.release() }
+		let pool: TranslationSessionPool = .init(
+			factory: { source, target in TranslationSession(installedSource: source, target: target) },
+			translateOperation: { _, _ in
+				await gate.wait()
+				return ""
+			},
+			timeout: .milliseconds(500)
+		)
+		let english: Locale.Language = .init(identifier: "en")
+		let hant: Locale.Language = .init(identifier: "zh-Hant")
+		await pool.markInstalled(from: english, to: hant)
+		await #expect(throws: TranslationTimeoutError.self, "卡死的那件應以逾時收場") {
+			try await pool.translate("卡住的一句", from: english, to: hant)
+		}
+		let stillKnown: Bool = await pool.isKnownInstalled(from: english, to: hant)
+		#expect(stillKnown == true, "逾時不是語言包不見了的證據，已裝妥快取應留著")
+	}
+
+	/// 呼叫端取消同樣**不**清掉「已知已裝妥」快取：取消只代表呼叫端不等了（關分頁、離開頁面），
+	/// 對語言包還在不在沒有任何訊號。這與短路計數對取消的處置是同一條原則：
+	/// `TranslationCircuitBreakerCountingTests` 釘住計數那一半，本條釘住快取這一半——兩者先前
+	/// 分開判，也正是漂移發生的地方（取消不計進計數、卻仍清掉快取）。
+	@Test
+	private func `cancelling the caller keeps the installed cache`() async {
+		let gate: HangGate = .init()
+		defer { gate.release() }
+		let ledger: TranslateLedger = .init()
+		let pool: TranslationSessionPool = .init(
+			factory: { source, target in TranslationSession(installedSource: source, target: target) },
+			translateOperation: { _, text in
+				_ = ledger.enter()
+				await gate.wait()
+				return text
+			},
+			timeout: .seconds(10)
+		)
+		let english: Locale.Language = .init(identifier: "en")
+		let hant: Locale.Language = .init(identifier: "zh-Hant")
+		await pool.markInstalled(from: english, to: hant)
+		let inFlight: Task<String, any Error> = Task {
+			try await pool.translate("被取消的一句", from: english, to: hant)
+		}
+		var spins: Int = 0
+		while ledger.enteredCount < 1, spins < 10_000 {
+			await Task.yield()
+			spins += 1
+		}
+		#expect(ledger.enteredCount == 1, "樁應已進場，取消才打得到等待中的那一件")
+		inFlight.cancel()
+		await #expect(throws: CancellationError.self, "取消應即刻以取消收場、不是拖到逾時") {
+			try await inFlight.value
+		}
+		let stillKnown: Bool = await pool.isKnownInstalled(from: english, to: hant)
+		#expect(stillKnown == true, "取消不是語言包不見了的證據，已裝妥快取應留著")
 	}
 
 	/// 上限之內返回的翻譯完全不受保護層影響：不誤判逾時、譯文原樣透傳、session 照常複用。

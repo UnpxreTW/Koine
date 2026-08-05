@@ -19,7 +19,7 @@ import Translation
 /// 譯出錯即丟棄該語言對的快取 session：語言包狀態可能已變（如剛下載完成），下次呼叫重建。
 ///
 /// 另附帶一個輕量「已知已裝妥」快取（`installedPairs`），供 `AppleTranslationEngine.status`
-/// 跳過重複的 `LanguageAvailability` 查詢——只快取正向結果，`translate` 失敗時一併失效，
+/// 跳過重複的 `LanguageAvailability` 查詢——只快取正向結果，`translate` 遇真實錯誤時失效，
 /// 避免使用者事後才下載語言包卻仍被過期快取擋下。
 ///
 /// 逾時保護：單件 translate 若永不返回（translationd 走跨程序往返、中斷通常以 error 收場，機率低），
@@ -94,10 +94,11 @@ public actor TranslationSessionPool {
 
 	/// 語言對「已知已裝妥」快取。只記正向結果——`.supported` / `.unsupported` 不快取，
 	/// 因為兩者之後都可能轉為已裝妥（使用者去系統設定下載語言包），沒有天然的失效訊號可跟隨。
-	/// 反向（使用者事後移除已裝語言包）靠 `translate` 失敗時失效，見下方 `translate` 的 catch；
-	/// 該失效發生前、同語言對已通過 `isKnownInstalled` 檢查的並發請求仍會照常送去 `translate`，
-	/// 差別只是失敗時收到的是原始 framework 錯誤而非 `LanguagePairStatus.actionableMessage`
-	/// 的可行動提示——下一次 `status` 查詢即會重新真查、非永久錯誤狀態。
+	/// 反向（使用者事後移除已裝語言包）**只**靠 `translate` 的真實錯誤失效（逾時／取消都不算證據，
+	/// 見下方 `translate` 的 catch）——`status` 命中 `isKnownInstalled` 即早退、不會為已標記的語言對
+	/// 重查，故該語言對此後若只以逾時或取消收場，正向旗標會一直留到下一次真實錯誤為止。失效發生前，
+	/// 已通過 `isKnownInstalled` 檢查的並發請求仍照常送去 `translate`，差別只是失敗時收到原始
+	/// framework 錯誤、而非 `LanguagePairStatus.actionableMessage` 的可行動提示。
 	private var installedPairs: Set<PairKey> = []
 
 	/// `translate` 入口的 per 語言對短路狀態（見型別說明「短路保護」段）。缺鍵＝從未逾時過、未短路。
@@ -237,15 +238,15 @@ public actor TranslationSessionPool {
 		recordReply(PairKey(source: source, target: target), in: &availabilityCircuits)
 	}
 
-	/// 以複用 session 翻譯一句；失敗（含逾時）時先丟棄該語言對快取（語言包狀態可能已變）再拋出。
-	/// 同語言對序列化執行（先取門閂再取 session：前一件失效重建後、下一件拿到的是新 session）。
+	/// 以複用 session 翻譯一句；失敗（含逾時、取消）先丟棄該語言對的快取 session 再拋出（短路快速失敗
+	/// 除外、見下）。同語言對序列化執行（先取門閂再取 session：前一件失效重建後、下一件拿到新 session）。
 	///
 	/// 短路檢查刻意排在 `acquire` **之後**、建 session **之前**：排在 `acquire` 之前雖然對
 	/// 「隊伍已空」的常見情形無差別（`busy` 未命中時 `acquire` 同步返回、無真正等待），但排在
 	/// 之後才能同時擋住「本已排隊、等待期間短路才剛觸發」這種情形——`release` 會把門閂直接轉移
 	/// 給下一位等候者，若不在拿到門閂後重新檢查，該等候者仍會被送去 `translateWithTimeout` 各自
-	/// 等滿 `timeout`，正是短路保護要解的資源累積。短路時不建 session、不呼叫 `translateOperation`，
-	/// 且**不動** `installedPairs`（短路是「暫時不試」、不是「語言包不見了」）。
+	/// 等滿 `timeout`，正是短路保護要解的資源累積。短路時**不建也不丟** session、不呼叫
+	/// `translateOperation`，且不動 `installedPairs`（短路是「暫時不試」、不是「語言包不見了」）。
 	public func translate(
 		_ text: String,
 		from source: Locale.Language,
@@ -271,23 +272,23 @@ public actor TranslationSessionPool {
 			// 順序顛倒或中間讓出 actor，同一顆非 Sendable 的 session 就會被兩件 translate 併發使用，
 			// 正是門閂要擋的事，且不會有任何編譯錯誤或測試變紅。
 			sessions[key] = nil
-			// 逾時＝放棄等待、不是「語言包不見了」的證據，故不動已裝妥快取：清掉會讓下一件重新真查
-			// `LanguageAvailability`，服務降級時該查詢回 `.supported`，使用者就收到「請去下載語言包」
-			// ——而那個語言包明明已經裝好。真失敗才是語言包狀態可能已變的證據。
-			if !(error is TranslationTimeoutError) {
-				installedPairs.remove(key)
-			}
-			// 短路計數只認「逾時」：真實錯誤（如語言碼有誤）代表服務有回應、只是這次做不到，
-			// 與「卡住」是不同訊號，故走 `recordReply` 歸零而非累加；呼叫端取消（`CancellationError`，
-			// 見 `translateWithTimeout` 的取消分支）兩者都不算——那只代表呼叫端不等了，對服務是否
-			// 卡住沒有訊號，計進任一邊都會扭曲短路判斷（取消常見於使用者關分頁等場景，若算「有回應」
-			// 會讓短路永遠追不上真正卡住的情形；算「逾時」則使用者行為變成觸發短路的訊號，同樣不對）。
+			// 兩者都由同一個 `error` 型別分派、且在每個 case 內各自只有一個答案（已裝妥快取只在真實錯誤
+			// 那臂清、計數只在逾時那臂累加），故一個 switch 就夠——**不是**因為兩者問同一件事（真實錯誤
+			// 既代表服務有回應、也是語言包狀態可能已變的證據），日後新增 case 要分別確認兩邊；分兩處各判
+			// 則會漂移，先前就漂過：取消不計進短路計數、卻仍清掉已裝妥快取。
+			// 逾時＝放棄等待、取消＝呼叫端不等了，都不是「語言包不見了」的證據，故都不動已裝妥快取。
+			// 逾時尤其不能清：清掉會讓下一件重新真查 `LanguageAvailability`，服務降級時該查詢回
+			// `.supported`，使用者就收到「請去下載語言包」——而那個語言包明明已經裝好。
+			// 短路計數則只認「逾時」：真實錯誤代表服務有回應、只是這次做不到，與「卡住」是不同訊號，故走
+			// `recordReply` 歸零而非累加；取消（`CancellationError`，見 `translateWithTimeout` 的取消分支）
+			// 計進任一邊都會扭曲判斷——算「有回應」會讓短路追不上真正卡住；算「逾時」則關分頁成了訊號。
 			switch error {
 			case is TranslationTimeoutError:
 				recordTimeout(key, in: &translateCircuits)
 			case is CancellationError:
 				break
 			default:
+				installedPairs.remove(key)
 				recordReply(key, in: &translateCircuits)
 			}
 			release(key)

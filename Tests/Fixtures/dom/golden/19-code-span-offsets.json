@@ -1,0 +1,8 @@
+[
+	{
+		"order": 0,
+		"source": "Call useState()\nin React.",
+		"state": "pending",
+		"protectedSpans": [{ "start": 5, "end": 15, "kind": "code" }]
+	}
+]

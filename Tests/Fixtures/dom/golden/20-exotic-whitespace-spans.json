@@ -1,0 +1,8 @@
+[
+	{
+		"order": 0,
+		"source": "a fn() b",
+		"state": "pending",
+		"protectedSpans": [{ "start": 2, "end": 6, "kind": "code" }]
+	}
+]

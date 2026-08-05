@@ -685,6 +685,19 @@ const SegmentState = Object.freeze({
 });
 
 /**
+ * 段內不可翻的原子區間（code / time）。
+ *
+ * ⚠ **位移基準＝ `Segment.source`**（正規化「後」的字串），半開區間 `[start, end)`。
+ * `extractText` 內部先以未正規化的字串記位移，由 `remapSpansToSource` 在
+ * `makeSegmentFromBuffer` 裡換算成 `source` 基準後才進 `meta`；段身上不帶 `extractText` 那條
+ * 字串，故那一側的位移對任何下游都不可用。（`meta.replaceSnapshot` 雖然也是未正規化的文字，
+ * 但它取自 `blockNode.textContent`、與 `extractText` 的產物不同源，一樣接不上這組位移。）
+ *
+ * ⚠ 區間邊界落在**正規化後**的字元上，故元素文字以空白起訖時邊界不對稱：該空白會與相鄰的
+ * 段落空白塌成同一個字元，而那個字元屬於誰只能二選一。實測 `<code> useState()</code>` 夾在
+ * 兩個字之間時，塌出來的空格算進區間（`slice` 得 `" useState()"`）；元素文字整段是空白時則
+ * 塌成零長度區間。要逐字還原元素原文的取用端不能只靠這組位移。
+ *
  * @typedef {object} ProtectedSpan
  * @property {number} start
  * @property {number} end
@@ -1004,7 +1017,13 @@ function collectSegments(root, ctx, opts = {}) {
 
 	function makeSegmentFromBuffer(buf, blockNode) {
 		const { text, spans } = extractText(buf);
-		const source = normalizeSource(text);
+		// spans 的位移必須跟著 `source` 走（見 remapSpansToSource），故有 span 的段才要索引對照表；
+		// 沒有 span 的段不為此配置陣列。（有 span 但走下面任一條早退的段仍會白配置一次——純空白段
+		// 的 `source === ""`、以及被 `worthTranslating` 判掉的段，兩條路上對照表都用不到。兩個判斷
+		// 都要先有 `source`，而 `source` 與對照表同一趟算出來，要避開就得為這種段多跑一趟折疊。）
+		const { source, map } = spans.length
+			? normalizeSourceWithMap(text)
+			: { source: normalizeSource(text), map: null };
 		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
 		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh });
 		const id = makeId(walkId, order);
@@ -1033,7 +1052,8 @@ function collectSegments(root, ctx, opts = {}) {
 		const replaceMode = insertMode === "replace";
 		if (spans.length || replaceMode) {
 			seg.meta = {};
-			if (spans.length) { seg.meta.protectedSpans = spans; seg.meta.charCount = source.length; }
+			// map 非 null ⟺ 這段有 span（上面依 spans.length 決定要不要產表）。
+			if (map) { seg.meta.protectedSpans = remapSpansToSource(spans, map); seg.meta.charCount = source.length; }
 			if (replaceMode) seg.meta.replaceSnapshot = blockNode.textContent || "";
 		}
 		segments.push(seg);
@@ -1106,6 +1126,10 @@ function makeAnchor(buf, blockNode, insertMode = "after-segment") {
 // ============================================================================
 
 /**
+ * ⚠ 回傳的 `spans` 位移記在 **`text`**（未正規化）上，與 `ProtectedSpan` 對外宣告的
+ * `source` 基準不同——`makeSegmentFromBuffer` 會過 `remapSpansToSource` 換算後才寫進 `meta`。
+ * 直接取用本函式回傳值的呼叫端（測試）要自己記得這一層。
+ *
  * @param {Node[]} buf
  * @returns {{ text: string, spans: ProtectedSpan[] }}
  */
@@ -1141,13 +1165,115 @@ function appendNode(node, text, spans) {
 	return text;
 }
 
-/** 空白正規化但保 \n（§11.3）：折疊空白為單一空格、保留換行、trim 兩端。 */
+/** 空白判定：`[^\S\n]`、`\n`、`String.prototype.trim` 三者的空白集合聯集恰為 `\s`。 */
+const RE_WHITESPACE = /\s/u;
+/**
+ * 同上、抓極大空白 run。模組層共用一顆，避免每次呼叫都配置。
+ *
+ * 進 `normalizeSourceCore` 時重設 `lastIndex` 屬**防禦性**、目前用不到：迴圈一定跑到 `exec`
+ * 回 `null` 才結束，而規格要求那時自動歸零。日後若在迴圈中加提前 `break`／`return`，那行就
+ * 從冗餘變成必要——所以留著。
+ */
+const RE_WHITESPACE_RUN = /\s+/gu;
+
+/**
+ * 空白正規化但保 \n（§11.3）：折疊空白為單一空格、保留換行、trim 兩端。單趟掃描，
+ * 可一併就地產出「原字串索引 → `source` 索引」對照表。
+ *
+ * 折疊語意：**每一段極大空白 run 塌成單一字元——run 內含換行則塌成 `\n`、否則塌成空格——
+ * 再 trim 兩端**。這與本函式改寫前的三道 regex 鏈（`[^\S\n]+`→空格、` *\n *`→`\n`、
+ * `\n{2,}`→`\n`、`.trim()`）逐字等價，等價性由 `Tests/dom/protected-spans.test.mjs`
+ * 以那條 regex 鏈當 oracle 對拍釘住。
+ *
+ * 之所以不繼續用那條鏈：`protectedSpans` 的位移得換算到 `source` 上（見 `remapSpansToSource`），
+ * 而鏈式 `replace` 產不出索引對照表。改成以 `\s+` 逐段抓 run、自己接字串，接的時候順手就記下
+ * 每個原索引的落點。與其在產品碼裡留兩套折疊邏輯各自漂移，不如收斂成這一套、讓鏈式版退進
+ * 測試當 oracle。
+ *
+ * @param {string} text
+ * @param {number[] | null} map 非 null 時就地填入對照表；呼叫端須配置 `text.length + 1` 格。
+ * @returns {string}
+ */
+function normalizeSourceCore(text, map) {
+	let out = "";
+	let last = 0;
+	RE_WHITESPACE_RUN.lastIndex = 0;
+	for (let m = RE_WHITESPACE_RUN.exec(text); m !== null; m = RE_WHITESPACE_RUN.exec(text)) {
+		// run 之前的非空白整段 slice 搬走。這裡刻意不逐字元接字串——拿 `Tools/gen-synthetic-page.mjs`
+		// 的合成頁抽出真實段字串量過，逐字元版比本函式取代掉的 regex 鏈慢約 3 倍，整段 slice 版才
+		// 回到與它同一量級。
+		if (m.index > last) {
+			if (map) for (let k = last; k < m.index; k++) map[k] = out.length + (k - last);
+			out += text.slice(last, m.index);
+		}
+		// 整段 run 塌成一個字元，run 內每個原索引都落在該字元上。
+		if (map) for (let k = m.index; k < m.index + m[0].length; k++) map[k] = out.length;
+		out += m[0].includes("\n") ? "\n" : " ";
+		last = m.index + m[0].length;
+	}
+	if (last < text.length) {
+		if (map) for (let k = last; k < text.length; k++) map[k] = out.length + (k - last);
+		out += text.slice(last);
+	}
+	if (map) map[text.length] = out.length;
+	// trim：run 已極大化（相鄰 run 不可能存在），故 out 的頭尾各最多一個空白字元。
+	const lead = out.length > 0 && RE_WHITESPACE.test(out[0]) ? 1 : 0;
+	let end = out.length;
+	if (end > lead && RE_WHITESPACE.test(out[end - 1])) end--;
+	const source = out.slice(lead, end);
+	// 被 trim 掉的兩端沒有對應位置，夾到最近的合法端點（頭 → 0、尾 → source.length）。
+	if (map) {
+		for (let k = 0; k <= text.length; k++) {
+			const shifted = map[k] - lead;
+			map[k] = shifted < 0 ? 0 : shifted > source.length ? source.length : shifted;
+		}
+	}
+	return source;
+}
+
+/** 空白正規化但保 \n（§11.3）。不需要索引對照表時走這條，不配置陣列。 */
 function normalizeSource(text) {
-	return text
-		.replace(/[^\S\n]+/gu, " ")  // 非換行空白折疊成單空格
-		.replace(/ *\n */gu, "\n")    // 換行兩側空白吃掉
-		.replace(/\n{2,}/gu, "\n")    // 多換行折疊
-		.trim();
+	return normalizeSourceCore(text, null);
+}
+
+/**
+ * 同 `normalizeSource`，另回索引對照表。
+ *
+ * @param {string} text
+ * @returns {{ source: string, map: number[] }} `map[i]` ＝原字串索引 i 在 `source` 上的落點；
+ *   長度 `text.length + 1`，尾巴那格是哨兵，供 `[start, end)` 的 end 換算。
+ */
+function normalizeSourceWithMap(text) {
+	/** @type {number[]} */
+	const map = new Array(text.length + 1);
+	const source = normalizeSourceCore(text, map);
+	return { source, map };
+}
+
+/**
+ * 把 `extractText` 產的 span 位移從**原字串**換算到 **`source`**（§6.2）。
+ *
+ * 基準取 `source` 這一側，因為段身上只帶得走 `source`：`extractText` 的未正規化字串在
+ * `makeSegmentFromBuffer` 返回後就不存在了，位移記在它上面等於指向一個下游拿不到的字串、
+ * 無從據以切片。同一個 `meta` 裡的 `charCount` 本來就數 `source.length`，兩欄基準也就此對齊。
+ *
+ * 條數守恆：逐條就地換算，不新增也不丟棄。內容整段被折疊掉的 span（例如只含空白的 `<code>`）
+ * 換算後是零長度區間——那正是它在 `source` 上的實況：沒有任何字元屬於它。
+ *
+ * ⚠ 就地改寫、**不具冪等性**：同一組 span 換算兩次會變成 `map[map[start]]`，而 `map` 與 `spans`
+ * 不同源時 `map[span.start]` 會是 `undefined` 並靜默寫進去。呼叫端須保證「同一次 `extractText`
+ * 的產物、只換算一次」——目前唯一呼叫點在 `makeSegmentFromBuffer`。
+ *
+ * @param {ProtectedSpan[]} spans 就地改寫
+ * @param {number[]} map `normalizeSourceWithMap` 產的對照表（須與產出 `spans` 的同一條原字串同源）
+ * @returns {ProtectedSpan[]} 同一個陣列
+ */
+function remapSpansToSource(spans, map) {
+	for (const span of spans) {
+		span.start = map[span.start];
+		span.end = map[span.end];
+	}
+	return spans;
 }
 
 // ============================================================================
@@ -1591,7 +1717,7 @@ const __koineExports = {
 	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,
 	REPLACE_TITLE_MAX_CHARS,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
-	walkAndLabel, collectSegments, extractText, normalizeSource, makeId,
+	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,
 };
 

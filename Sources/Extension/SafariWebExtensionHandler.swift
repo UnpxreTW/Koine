@@ -29,13 +29,16 @@ extension SafariWebExtensionHandler: NSExtensionRequestHandling {
 			// 訊息拆解 + 引擎呼叫委派核心 BridgeTranslator（§9.4：{id,source} → {id,text}）；
 			// handler 只負責 NSExtension I/O 橋接，譯文邏輯與 CLI 共用同一路徑。
 			let translator = BridgeTranslator(engine: AppleTranslationEngine())
-			let payload = await translator.handle(message)
-			if let error = payload["error"] as? String {
-				logger.error("翻譯失敗: \(error, privacy: .public)")
-			} else if let text = payload["text"] as? String {
+			let response = await translator.handle(message)
+			// 窮舉 switch 而非回頭翻 payload 的鍵：新增一種回應形狀時這裡會編不過，
+			// 不會靜默地既不記成功也不記失敗。
+			switch response {
+			case .translated(_, let text):
 				logger.log("翻譯完成: \(text, privacy: .public)")
+			case .failed(_, let reason), .unidentified(let reason):
+				logger.error("翻譯失敗: \(reason, privacy: .public)")
 			}
-			respond(context, with: payload)
+			respond(context, with: response.payload)
 		}
 	}
 

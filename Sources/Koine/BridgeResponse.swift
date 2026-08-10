@@ -41,7 +41,7 @@ extension BridgeResponse {
 	///
 	/// 值型別維持 `Any` 而非收窄成 `String`：這份 dict 直接進 `NSExtensionItem.userInfo`
 	/// （`[AnyHashable: Any]`）由 Safari 序列化，收窄會改變送進橋接層的具體型別，而該行為
-	/// 只有真的跑一次擴充才驗得出。現行三種形狀的值恰好都是字串是巧合，不是契約。
+	/// 只有真的跑一次擴充才驗得出來。現行三種形狀的值恰好都是字串是巧合、不是契約。
 	public var payload: [String: Any] {
 		switch self {
 		case .translated(let identifier, let text):

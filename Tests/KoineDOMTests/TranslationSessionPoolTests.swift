@@ -166,4 +166,27 @@ private final class TranslationSessionPoolTests {
 		let stillKnown = await pool.isKnownInstalled(from: bogusSource, to: bogusTarget)
 		#expect(stillKnown == false, "出錯後應清掉已知已裝妥快取、強迫下次重查")
 	}
+
+	/// 同上規則、但**不碰真 `translationd`**：注入直接拋錯的樁，單獨釘住「真實錯誤會讓已知已裝妥
+	/// 快取失效」。上一條靠未安裝語言對讓框架自己報錯，好處是連「框架真的會報錯」這個假設一併驗到，
+	/// 代價是紅綠取決於執行環境；兩條並存才是既驗規則、又驗環境假設。缺了本條，失效那一臂在純樁
+	/// 層面無人看守——`translate` catch 裡的 `installedPairs.remove` 被刪掉時，只剩環境相依的上一條會紅。
+	@Test
+	private func `a real error invalidates the installed cache without the framework`() async {
+		struct SampleFailure: Error {}
+		let pool: TranslationSessionPool = .init(
+			factory: { source, target in TranslationSession(installedSource: source, target: target) },
+			translateOperation: { _, _ in throw SampleFailure() }
+		)
+		let english: Locale.Language = .init(identifier: "en")
+		let hant: Locale.Language = .init(identifier: "zh-Hant")
+		await pool.markInstalled(from: english, to: hant)
+		let markedKnown: Bool = await pool.isKnownInstalled(from: english, to: hant)
+		#expect(markedKnown == true, "標記後應回報已知已裝妥——沒有這行就只觀測到 false 那端")
+		await #expect(throws: SampleFailure.self, "樁應原樣拋出真實錯誤") {
+			try await pool.translate("一", from: english, to: hant)
+		}
+		let stillKnown: Bool = await pool.isKnownInstalled(from: english, to: hant)
+		#expect(stillKnown == false, "真實錯誤是語言包狀態可能已變的證據、已裝妥快取應失效")
+	}
 }

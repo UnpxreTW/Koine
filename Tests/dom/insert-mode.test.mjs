@@ -449,10 +449,15 @@ test("effectiveLangOf：自身優先於祖先、查無回 null", () => {
 });
 
 test("isSimplifiedChinese：簡中語碼變體全命中、其餘不命中", () => {
-	for (const lang of ["zh-cn", "zh-hans", "zh-hans-cn"]) {
+	// script 子標籤直命中，以及地區子標籤（星馬華文用簡化字）、底線形、extlang 形——
+	// 全走分類器、由 script 翻案地區，前綴表補不到的四種寫法一併鎖住。
+	for (const lang of [
+		"zh-cn", "zh-hans", "zh-hans-cn", "zh-sg", "zh-my", "zh_cn", "zh-cmn-hans-cn",
+	]) {
 		assert.equal(koine.isSimplifiedChinese(lang), true, `${lang} 應命中`);
 	}
-	for (const lang of ["zh-tw", "zh-hant", "zh", "en", "ja", null, undefined, ""]) {
+	// `zh-hansx` 是畸形標籤（前綴恰好撞上），改走分類器後正確地不命中。
+	for (const lang of ["zh-tw", "zh-hant", "zh", "zh-hansx", "en", "ja", null, undefined, ""]) {
 		assert.equal(koine.isSimplifiedChinese(lang), false, `${lang} 不應命中`);
 	}
 });

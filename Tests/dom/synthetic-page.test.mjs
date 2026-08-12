@@ -33,7 +33,7 @@ import { runOnce, countersFor, BASELINE_PATH, DEFAULTS } from "../../Tools/bench
 // 現況快照：seed 1、預設 60 節。
 const EXPECTED = {
 	segmentCount: 505,
-	computedStyleCalls: 854,
+	computedStyleCalls: 881,
 	sourceChars: 26837,
 	buttonSegments: 8,
 	protectedSpans: 27,
@@ -46,7 +46,7 @@ const EXPECTED = {
 // 第二個資料點：真實頁面量級（約 200 段），確保計數變動不是只在單一頁面大小上成立。
 const EXPECTED_SMALL = {
 	segmentCount: 199,
-	computedStyleCalls: 346,
+	computedStyleCalls: 355,
 	sourceChars: 10579,
 	buttonSegments: 3,
 	protectedSpans: 9,

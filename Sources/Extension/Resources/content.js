@@ -424,19 +424,10 @@ function classifyNode(node, ctx) {
 	// [2] 硬標籤黑名單（Set.has O(1)、整棵剪枝）；MathML 命中根即整棵跳
 	if (SKIP_SUBTREE_TAGS.has(tag) || tag === "MATH") return { disp: "SKIP_SUBTREE", cs: null };
 
-	// [3] PRE → SKIP；CODE（祖先無 PRE）→ OPAQUE
+	// [3] PRE → SKIP（硬結構跳、與過濾訊號無關，維持早退）
 	if (tag === "PRE") return { disp: "SKIP_SUBTREE", cs: null };
-	if (tag === "CODE") {
-		const inPre = typeof el.closest === "function" && el.closest("pre");
-		return inPre ? { disp: "SKIP_SUBTREE", cs: null } : { disp: "OPAQUE_INLINE", cs: null };
-	}
 
-	// [4] OPAQUE_INLINE_TAGS（trim 非空才併）
-	if (OPAQUE_INLINE_TAGS.has(tag)) {
-		return hasText(el) ? { disp: "OPAQUE_INLINE", cs: null } : { disp: "SKIP_SUBTREE", cs: null };
-	}
-
-	// [5] 屬性隱藏 / 語意（純屬性讀取、無 reflow）
+	// [4] 屬性隱藏 / 語意（純屬性讀取、無 reflow）
 	if (el.getAttribute("aria-hidden") === "true") return { disp: "SKIP_SUBTREE", cs: null };
 	if (el.hidden === true || el.hasAttribute("hidden")) return { disp: "SKIP_SUBTREE", cs: null };
 	if (isContentEditable(el)) return { disp: "SKIP_SUBTREE", cs: null };
@@ -444,21 +435,37 @@ function classifyNode(node, ctx) {
 	if (role && SKIP_ROLES.has(role.toLowerCase().trim())) return { disp: "SKIP_SUBTREE", cs: null };
 	if (hasSkipClass(el)) return { disp: "SKIP_SUBTREE", cs: null };
 
-	// [6] translate-no（容器白名單護欄）
+	// [5] translate-no（容器白名單護欄）
 	if (respectsTranslateNo(el)) {
 		// block 級 → SKIP_SUBTREE；行內留待 §6 buffer 當 OPAQUE 併（此處先整棵跳，行內 case 由覆寫表處理）
 		return { disp: "SKIP_SUBTREE", cs: null };
 	}
 
-	// [7] 站台覆寫（hostname → selector，v1 空表）— 預留
+	// [6] 站台覆寫（hostname → selector，v1 空表）— 預留
 
-	// [8] lang 自身為目標語（不繼承）
+	// [7] lang 自身為目標語（不繼承）
 	if (isAlreadyTargetLang(el, ctx.targetLang)) return { disp: "SKIP_SUBTREE", cs: null };
 
-	// [9] getStyle（唯一一次）：display:none / visibility / content-visibility
+	// [8] getStyle（唯一一次）：display:none / visibility / content-visibility
 	const cs = ctx.getStyle(el);
 	if (cs.display === "none" || cs.display === "") return { disp: "SKIP_SUBTREE", cs };
 	if (cs.contentVisibility === "hidden") return { disp: "SKIP_SUBTREE", cs };
+
+	// [9] CODE / OPAQUE_INLINE_TAGS → 不可分割原子（**排在過濾閘之後**）。
+	// ⚠ 這組判定原本排在屬性隱藏／translate-no／display 閘之前，於是 code/time **自身**帶著
+	// `aria-hidden`／`hidden`／`display:none`／`translate="no"`／sr-only 時，OPAQUE 決策搶先短路、
+	// 過濾訊號整條失效、隱藏的 code/time 照樣被採集外送（同類非 opaque 標籤如 <span> 則正確跳掉）。
+	// 移到過濾閘之後：先讓 [4]-[8] 有機會跳掉，剩下真正該採的才判 OPAQUE。副作用是 code/time 現在
+	// 各多付一次 getStyle（原本 [3]/[4] 早退不讀 style），以及 `<code lang="目標語">` 會在 [7]
+	// 命中而整棵跳——後者正是「自身已達標」的預期行為。
+	if (tag === "CODE") {
+		const inPre = typeof el.closest === "function" && el.closest("pre");
+		return inPre ? { disp: "SKIP_SUBTREE", cs } : { disp: "OPAQUE_INLINE", cs };
+	}
+	if (OPAQUE_INLINE_TAGS.has(tag)) {
+		return hasText(el) ? { disp: "OPAQUE_INLINE", cs } : { disp: "SKIP_SUBTREE", cs };
+	}
+
 	// visibility:hidden 不整棵跳（§3.7 B5）：自身不產段、續 walk 子孫 → 交給採集核心，此處放行
 	return { disp: "WALK", cs };
 }
@@ -1177,10 +1184,18 @@ function appendNode(node, text, spans, labelOf) {
 	if (tag === "BR") return text + "\n";                 // §6.2-1
 	if (tag === "RT" || tag === "RP") return text;        // §6.2-2 ruby 只取 base
 	if (OPAQUE_INLINE_TAGS.has(tag)) {                    // code/time 原子 + 記 protectedSpan
-		const piece = el.textContent || "";
-		const start = text.length;
-		text += piece;
-		spans.push({ start, end: text.length, kind: tag.toLowerCase() });
+		// 子樹也套走訪層過濾：巢在 <code>/<time> 內、被 disp 判成 SKIP_SUBTREE 的內容（`aria-hidden`／
+		// `hidden`／`display:none`／`translate="no"`／sr-only／`contenteditable`）不得混進不可分割原子
+		// 外送——原子性仍在，只是原子的內容先過濾。無 `labelOf`（單獨抽文字的呼叫端）維持原
+		// `textContent` 語義、不套任何過濾。protectedSpan 涵蓋的是實際 append 進 text 的過濾後範圍。
+		const piece = labelOf ? opaqueText(el, labelOf) : (el.textContent || "");
+		// 子樹全被過濾時 piece 為空——不記零寬 protectedSpan、不產空原子（classifyNode 的
+		// `hasText` 閘看的是未過濾的 textContent，擋不掉「文字全在被過濾子樹裡」這一種）。
+		if (piece) {
+			const start = text.length;
+			text += piece;
+			spans.push({ start, end: text.length, kind: tag.toLowerCase() });
+		}
 		return text;
 	}
 	// 其餘 inline 元素：遞迴子節點（ruby base、巢狀 inline）。`display:contents` 容器不會整個進
@@ -1201,6 +1216,26 @@ function appendNode(node, text, spans, labelOf) {
 		text = appendNode(child, text, spans, labelOf);
 	}
 	return text;
+}
+
+/**
+ * OPAQUE 原子（<code>/<time>）的子樹文字，套走訪層過濾。語義＝`el.textContent` 減去被 `disp`
+ * 判成 SKIP_SUBTREE 的子樹；**維持 textContent 語義**（不轉 <br>、不特判 ruby），只多一層過濾。
+ * 巢狀在原子內的 OPAQUE 子代不另記 span——外層 code/time 是單一原子，用遞迴自身（非 appendNode）
+ * 累積文字即可。呼叫端只在有 `labelOf` 時走本函式。
+ * @param {Element} el
+ * @param {((node: Node) => NodeLabel)} labelOf
+ * @returns {string}
+ */
+function opaqueText(el, labelOf) {
+	let s = "";
+	for (const child of childNodes(el)) {
+		if (child.nodeType === NODE_TEXT) { s += child.nodeValue || ""; continue; }
+		if (child.nodeType !== NODE_ELEMENT) continue;
+		if (labelOf(child).disp === "SKIP_SUBTREE") continue;
+		s += opaqueText(/** @type {Element} */ (child), labelOf);
+	}
+	return s;
 }
 
 /** 空白判定：`[^\S\n]`、`\n`、`String.prototype.trim` 三者的空白集合聯集恰為 `\s`。 */

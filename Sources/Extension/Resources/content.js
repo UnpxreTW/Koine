@@ -85,14 +85,15 @@ function hasButtonRole(el) {
 	return !!role && role.toLowerCase().trim() === "button";
 }
 
-/** 元素自身是否符合 button-class 標籤／role 判準（不含長度與 block 子檢查）。 @param {Element} el */
+/**
+ * 元素自身是否符合 button-class 標籤／role 判準（不含長度與 block 子檢查）。 @param {Element} el */
 function isButtonClassElement(el) {
 	if (!el || el.nodeType !== NODE_ELEMENT) return false;
 	return el.tagName === "BUTTON" || el.tagName === "LABEL" || hasButtonRole(el);
 }
 
 /**
- * 是否只有純文字子代（無任何元素子節點，含 SKIP_SUBTREE 如 svg/img、OPAQUE_INLINE 如 code/time、
+ * 是否只有純文字子代（無任何元素子節點,含 SKIP_SUBTREE 如 svg/img、OPAQUE_INLINE 如 code/time、
  * 一般 inline 元素如 span/strong）。原地換字用 `el.textContent = 譯文` 整個覆寫、會連帶砍掉所有
  * 元素子節點——icon（svg/img）等非文字資源一旦被砍就回不來，且這類節點常是 SKIP_SUBTREE，完全不會
  * 反映在 source／長度判準裡（採集時就已被過濾、對判準不可見）。保守起步：只要有任何元素子節點就不
@@ -545,10 +546,24 @@ function isTraditionalChineseTarget(targetLang) {
 	return zhVariantSatisfies(targetVariant, "hant");
 }
 
-/** §3.6 語碼是否為簡中變體。 @param {string|null|undefined} lang 已小寫 trim 的語碼 */
+/**
+ * §3.6 語碼是否為簡中變體（來源側）。走 `classifyZhVariant` + `zhVariantSatisfies`、**不自備
+ * 語碼前綴表**——與目標側 `isTraditionalChineseTarget`、段級 `isAlreadyTargetLang`、頁面級
+ * `detectPageLangIsZh` 收斂到同一組書寫變體定義。
+ *
+ * **為什麼不留字串前綴表**：原本 `lang === "zh-cn" || lang.startsWith("zh-hans")` 兩頭都錯——
+ * `zh-SG`／`zh-MY`（星馬華文用簡化字）、`zh_CN`（底線形，Apple locale identifier 形狀）、
+ * `zh-cmn-Hans-CN`（extlang 形）明明是簡體卻判 false；`zh-hansx` 這種只是前綴恰好撞上的畸形
+ * 標籤反而判 true。分類器由 script 子標籤翻案地區提示、位置無關，四漏一誤一次補齊。
+ *
+ * @param {string|null|undefined} lang 語碼（大小寫／底線形皆可，`classifyZhVariant` 自行正規化）
+ */
 function isSimplifiedChinese(lang) {
-	if (!lang) return false;
-	return lang === "zh-cn" || lang.startsWith("zh-hans");
+	const langVariant = classifyZhVariant(lang);
+	// 非中文標籤的早退是**型別守衛**、不是行為分支（同 `isTraditionalChineseTarget`）：
+	// `zhVariantSatisfies` 收 `ZhVariant`（不含 null），對 null 也落到末行回 false。
+	if (!langVariant) return false;
+	return zhVariantSatisfies(langVariant, "hans");
 }
 
 /**

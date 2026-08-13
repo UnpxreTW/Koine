@@ -400,9 +400,16 @@ function makeContext(opts = {}) {
 // ============================================================================
 
 /**
+ * SKIP_SUBTREE 的理由標記。目前只標 [8]（自身 lang 已是目標語）這一條，因為它是**唯一一條
+ * 「不必翻」而非「不該外送」的 skip**——兩者對 OPAQUE 子樹併字的正確處置相反：不該外送的要挖掉，
+ * 不必翻的只是不另成段、文字仍是頁面上看得到的內容，挖掉就會讓譯句缺字。
+ */
+const SKIP_CAUSE_ALREADY_TARGET = "already-target";
+
+/**
  * @param {Node} node
  * @param {CollectContext} ctx
- * @returns {{ disp: NodeDisposition, cs: StyleInfo | null }}
+ * @returns {{ disp: NodeDisposition, cs: StyleInfo | null, cause?: string }}
  */
 function classifyNode(node, ctx) {
 	// [0] node type 閘
@@ -429,21 +436,21 @@ function classifyNode(node, ctx) {
 	if (tag === "PRE") return { disp: "SKIP_SUBTREE", cs: null };
 	if (tag === "CODE") {
 		const inPre = typeof el.closest === "function" && el.closest("pre");
-		return inPre ? { disp: "SKIP_SUBTREE", cs: null } : { disp: "OPAQUE_INLINE", cs: null };
+		if (inPre) return { disp: "SKIP_SUBTREE", cs: null };
+		// 自身過濾訊號優先於 OPAQUE 歸類（見 opaqueSelfSkips）：`<code aria-hidden="true">` 等
+		// 一律整棵跳，不因為它是 OPAQUE 就繞過 [5]／[6]／[9]。
+		if (opaqueSelfSkips(el, ctx)) return { disp: "SKIP_SUBTREE", cs: null };
+		return { disp: "OPAQUE_INLINE", cs: null };
 	}
 
 	// [4] OPAQUE_INLINE_TAGS（trim 非空才併）
 	if (OPAQUE_INLINE_TAGS.has(tag)) {
+		if (opaqueSelfSkips(el, ctx)) return { disp: "SKIP_SUBTREE", cs: null };
 		return hasText(el) ? { disp: "OPAQUE_INLINE", cs: null } : { disp: "SKIP_SUBTREE", cs: null };
 	}
 
 	// [5] 屬性隱藏 / 語意（純屬性讀取、無 reflow）
-	if (el.getAttribute("aria-hidden") === "true") return { disp: "SKIP_SUBTREE", cs: null };
-	if (el.hidden === true || el.hasAttribute("hidden")) return { disp: "SKIP_SUBTREE", cs: null };
-	if (isContentEditable(el)) return { disp: "SKIP_SUBTREE", cs: null };
-	const role = el.getAttribute("role");
-	if (role && SKIP_ROLES.has(role.toLowerCase().trim())) return { disp: "SKIP_SUBTREE", cs: null };
-	if (hasSkipClass(el)) return { disp: "SKIP_SUBTREE", cs: null };
+	if (hasAttrSkipSignal(el)) return { disp: "SKIP_SUBTREE", cs: null };
 
 	// [6] translate-no（容器白名單護欄）
 	if (respectsTranslateNo(el)) {
@@ -453,8 +460,11 @@ function classifyNode(node, ctx) {
 
 	// [7] 站台覆寫（hostname → selector，v1 空表）— 預留
 
-	// [8] lang 自身為目標語（不繼承）
-	if (isAlreadyTargetLang(el, ctx.targetLang)) return { disp: "SKIP_SUBTREE", cs: null };
+	// [8] lang 自身為目標語（不繼承）。帶 cause：這條 skip 的理由是「不必翻」而非「不該外送」，
+	// OPAQUE 子樹併字要據此區分（見 opaqueTextOf）。
+	if (isAlreadyTargetLang(el, ctx.targetLang)) {
+		return { disp: "SKIP_SUBTREE", cs: null, cause: SKIP_CAUSE_ALREADY_TARGET };
+	}
 
 	// [9] getStyle（唯一一次）：display:none / visibility / content-visibility
 	const cs = ctx.getStyle(el);
@@ -462,6 +472,43 @@ function classifyNode(node, ctx) {
 	if (cs.contentVisibility === "hidden") return { disp: "SKIP_SUBTREE", cs };
 	// visibility:hidden 不整棵跳（§3.7 B5）：自身不產段、續 walk 子孫 → 交給採集核心，此處放行
 	return { disp: "WALK", cs };
+}
+
+/**
+ * [5] 屬性隱藏 / 語意訊號（純屬性讀取、無 reflow）。抽出來給 classifyNode 的一般路徑與
+ * OPAQUE 自檢共用——兩處各寫一份就是讓它們漂開的路（本函式的存在正因為 OPAQUE 曾經漏掉整組）。
+ * @param {Element} el
+ * @returns {boolean}
+ */
+function hasAttrSkipSignal(el) {
+	if (el.getAttribute("aria-hidden") === "true") return true;
+	if (el.hidden === true || el.hasAttribute("hidden")) return true;
+	if (isContentEditable(el)) return true;
+	const role = el.getAttribute("role");
+	if (role && SKIP_ROLES.has(role.toLowerCase().trim())) return true;
+	return hasSkipClass(el);
+}
+
+/**
+ * OPAQUE（`<code>`／`<time>`）歸類前的自身過濾自檢：補上 [5]／[6]／[9] 三組**自身**訊號。
+ *
+ * 為什麼需要：OPAQUE 的 return 排在 [5] 之前，於是 `<code aria-hidden="true">`／`<code hidden>`／
+ * `<code translate="no">`／`<code class="sr-only">`／`display:none` 的 `<code>` 一律照舊併進段落
+ * 送往翻譯端點——同樣的訊號掛在 `<span>` 上都擋得住。違反的是網站作者與使用者的明示意圖，
+ * `display:none` 那條另讓譯文混進看不到的文字。
+ *
+ * ⚠ 只補這三組、**不含 [8] `isAlreadyTargetLang`**：那條會改變「標了目標語的行內 `<code>` 該不該
+ * 併進段落」的語義，屬另一題。也因為 [9] 進來，非 `<pre>` 內的 `<code>`／`<time>` 每顆多一次
+ * `getStyle`（走 ctx 快取、同一元素一輪只算一次）。
+ * @param {Element} el
+ * @param {CollectContext} ctx
+ * @returns {boolean}
+ */
+function opaqueSelfSkips(el, ctx) {
+	if (hasAttrSkipSignal(el)) return true;               // [5]
+	if (respectsTranslateNo(el)) return true;             // [6]
+	const cs = ctx.getStyle(el);                          // [9]
+	return cs.display === "none" || cs.display === "" || cs.contentVisibility === "hidden";
 }
 
 /** contenteditable 繼承（§3.4 安全紅線）。 */
@@ -776,6 +823,7 @@ function* childNodes(node) {
  *                                     // （含 <html>）；`""`＝語言未知（不繼承）、`null`＝整鏈皆無 lang
  * @property {RegionValue|null} region     // §6.5 最近 landmark 祖先（含自身）；無 landmark 為 null
  * @property {RegionValue|null} regionHint // §6.5 最近 class/id hint（含自身）；無訊號為 null
+ * @property {string} [cause]          // SKIP_SUBTREE 的理由（見 SKIP_CAUSE_ALREADY_TARGET）；其餘處置不帶
  */
 
 /**
@@ -812,11 +860,11 @@ function walkAndLabel(root, ctx) {
 	 * @returns {boolean} hasBlockDescendant（含自身為 block）
 	 */
 	function visit(node, landmark, hint, lang) {
-		const { disp, cs } = classifyNode(node, ctx);
+		const { disp, cs, cause } = classifyNode(node, ctx);
 		if (disp === "SKIP_SUBTREE") {
 			labels.set(node, {
 				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
-				lang, region: landmark, regionHint: hint,
+				lang, region: landmark, regionHint: hint, cause,
 			});
 			return false;
 		}
@@ -825,6 +873,14 @@ function walkAndLabel(root, ctx) {
 				disp, cs, isBlock: false, hasBlockDescendant: false, transparent: false,
 				lang, region: landmark, regionHint: hint,
 			});
+			// **子孫仍要標記**：§6.2 併字改成查 label 過濾（子樹內 `aria-hidden`／`hidden`／
+			// `translate="no"`／`display:none` 的內容不得混進 source），沒標的子孫在 WeakMap 上是
+			// miss、過濾就落回 fail-open。標記不改變 OPAQUE 自身的語義：本節點仍回 false（不可分割、
+			// 視為 inline），子孫的 block 訊號一律不上傳、也不會各自成段（第二遍不展開 OPAQUE）。
+			// 子孫的 lang／region 沿用繼承值：OPAQUE 子孫永不成段，這幾欄只有成段時才被讀。
+			for (const child of childNodes(/** @type {Element} */ (node))) {
+				visit(child, landmark, hint, lang);
+			}
 			return false; // 不展開、不可分割、視為 inline
 		}
 		// WALK
@@ -908,13 +964,16 @@ function collectSegments(root, ctx, opts = {}) {
 		return labels.get(node) || classifyLabel(node, ctx);
 	}
 	function classifyLabel(node, c) {
-		const { disp, cs } = classifyNode(node, c);
+		const { disp, cs, cause } = classifyNode(node, c);
 		const isBlock = node.nodeType === NODE_ELEMENT && disp === "WALK"
 			&& isShallowBlock(/** @type {Element} */ (node), cs);
 		const transparent = !isBlock && node.nodeType === NODE_ELEMENT && disp === "WALK"
 			&& !!cs && isTransparentDisplay(cs.display);
 		// 未知子代資訊時保守視為「有 block 子」，防禦路徑不誤判為 button-class（§P4）。
-		return { disp, cs, isBlock, hasBlockDescendant: true, transparent, lang: null, region: null, regionHint: null };
+		return {
+			disp, cs, isBlock, hasBlockDescendant: true, transparent,
+			lang: null, region: null, regionHint: null, cause,
+		};
 	}
 	/**
 	 * §2.4 透明穿透：`display:contents` 元素不產生盒，走訪時就地以其子節點取代自身（可巢狀）。
@@ -1192,7 +1251,13 @@ function appendNode(node, text, spans, labelOf) {
 	if (tag === "BR") return text + "\n";                 // §6.2-1
 	if (tag === "RT" || tag === "RP") return text;        // §6.2-2 ruby 只取 base
 	if (OPAQUE_INLINE_TAGS.has(tag)) {                    // code/time 原子 + 記 protectedSpan
-		const piece = el.textContent || "";
+		// 原子性不變（併出來仍是單一連續字串、仍不可翻），但**不再一行 textContent 取完**：
+		// `textContent` 不看子代的 disp，於是巢在 `<code>`／`<time>` 內的 `aria-hidden`／`hidden`／
+		// `sr-only`／`translate="no"`／`display:none` 內容照樣被送往翻譯端點。改走查 label 的遞迴。
+		const piece = opaqueTextOf(el, labelOf);
+		// 內容全被濾掉 → 不併字、也不記零長 span（[4] 的 hasText 閘讀的是未過濾的 textContent，
+		// 擋不住這個情形）。
+		if (!piece) return text;
 		const start = text.length;
 		text += piece;
 		spans.push({ start, end: text.length, kind: tag.toLowerCase() });
@@ -1216,6 +1281,41 @@ function appendNode(node, text, spans, labelOf) {
 		text = appendNode(child, text, spans, labelOf);
 	}
 	return text;
+}
+
+/**
+ * OPAQUE 子樹的文字，套用走訪層的過濾結果。
+ *
+ * 與 `appendNode` 的差別：這裡**不套 `<br>`／ruby 的 tag 特判**——OPAQUE 的語義是「整棵當一段
+ * 不可翻的原子字串」，起點是 `textContent`，但會挖掉走訪層判為 SKIP_SUBTREE 的子樹。⚠ 那組
+ * SKIP 不只「明示不該外送」的訊號，也含標籤黑名單（`<svg>`／`<script>`／`<rt>`／`<pre>` 等），
+ * 故巢在 OPAQUE 內的注音與 SVG 文字同樣不併——與一般 inline 路徑一致，但**與 `textContent` 不等價**。
+ * 巢狀 OPAQUE（`<time>` 內的 `<code>`）同樣只併字、不另記 span，與改動前一致。
+ *
+ * ⚠ **`labelOf` 缺席時退回未過濾的 `textContent`**：這是原地保留既有行為（`extractText` 的
+ * `labelOf` 是選用參數、`appendNode` 也以 `labelOf &&` 守衛），但寫成明寫的分支而非靜默失效——
+ * 採集路徑（`makeSegmentFromBuffer`）一律要傳，沒傳就是「單獨拿工具函式抽文字」那條不套過濾的
+ * 呼叫端。要把它改成 fail-closed 得先決定該路徑的契約，屬另一題。
+ * @param {Node} node
+ * @param {((node: Node) => NodeLabel)} [labelOf]
+ * @returns {string}
+ */
+function opaqueTextOf(node, labelOf) {
+	if (node.nodeType === NODE_TEXT) return node.nodeValue || "";
+	if (node.nodeType !== NODE_ELEMENT) return "";
+	const el = /** @type {Element} */ (node);
+	if (!labelOf) return el.textContent || "";
+	let out = "";
+	for (const child of childNodes(el)) {
+		const label = labelOf(child);
+		// **[8]（自身 lang 已是目標語）不參與這裡的過濾**：那條 skip 的意思是「不必另外翻」，
+		// 文字仍在頁面上看得見——挖掉它會讓 `<code>rm <var lang="zh-TW">檔名</var></code>` 只送出
+		// `rm `，譯句與 protectedSpan 都缺字。不該外送的那些（自家標記、標籤黑名單、隱藏、
+		// `translate="no"`）照挖。
+		if (label.disp === "SKIP_SUBTREE" && label.cause !== SKIP_CAUSE_ALREADY_TARGET) continue;
+		out += opaqueTextOf(child, labelOf);
+	}
+	return out;
 }
 
 /** 空白判定：`[^\S\n]`、`\n`、`String.prototype.trim` 三者的空白集合聯集恰為 `\s`。 */

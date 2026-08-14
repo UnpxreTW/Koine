@@ -11,7 +11,7 @@
 	},
 	"counters": {
 		"segmentCount": 505,
-		"computedStyleCalls": 854,
+		"computedStyleCalls": 881,
 		"sourceChars": 26837,
 		"buttonSegments": 8,
 		"protectedSpans": 27,
@@ -22,13 +22,13 @@
 	},
 	"counterVariants": 1,
 	"collectMs": {
-		"min": 4.025958000000003,
-		"p50": 4.296084000000008,
-		"p95": 5.110458999999992,
-		"mean": 4.498482033333328,
-		"cv": 0.0792494447814185
+		"min": 4.155709000000002,
+		"p50": 4.513250000000028,
+		"p95": 5.356042000000002,
+		"mean": 4.618201399999998,
+		"cv": 0.07108693859104226
 	},
-	"peakRssMB": 87.6,
+	"peakRssMB": 89.1,
 	"env": {
 		"platform": "darwin",
 		"arch": "arm64",

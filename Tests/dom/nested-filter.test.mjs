@@ -166,3 +166,25 @@ test("OPAQUE 子樹的過濾只挖掉該子樹：同層其他文字照常併入"
 		["alpha keep()tail beta"],
 	);
 });
+
+test("OPAQUE 子樹的過濾要往下走過每一層，不是只看直屬子代", () => {
+	// 上面幾條的過濾訊號都掛在 OPAQUE 的直屬子代上，只要「檢查一層再取 textContent」就會全綠。
+	// 這條把訊號埋進第二層：`<b>` 自己沒有訊號、要留；它底下的 `<span hidden>` 要挖。
+	// 少了往下遞迴的話，結果不是缺掉整個 `<b>`（少 bc）就是把 LEAKED 一起送出去。
+	assert.deepEqual(
+		sourcesOf("<p>x <code>a<b>b<span hidden>LEAKED</span>c</b>d</code> y</p>"),
+		["x abcd y"],
+	);
+});
+
+test("對照：沒有過濾訊號的 <time> 照常併入並記成 kind: time", () => {
+	// 本檔前面的 `<time>` 案例全是「應被擋下」的負向組，正向對照那條只驗過 `<code>`。
+	// （`protected-spans.test.mjs` 另有一條帶空白正規化的複合案例也會讀到 time 的 kind；
+	//   這裡釘的是本檔範圍內的最小正向形，好讓上面五條負向組有對稱的一側。）
+	const segs = collect(docOf("<p>alpha <time>2026</time> beta</p>"));
+	assert.equal(segs.length, 1);
+	const { source, meta } = segs[0];
+	assert.equal(source, "alpha 2026 beta");
+	assert.deepEqual(meta.protectedSpans, [{ start: 6, end: 10, kind: "time" }]);
+	assert.equal(source.slice(6, 10), "2026");
+});

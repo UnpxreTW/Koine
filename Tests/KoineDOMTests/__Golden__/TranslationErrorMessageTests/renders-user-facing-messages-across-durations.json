@@ -1,0 +1,62 @@
+[
+  {
+    "duration" : "30 秒",
+    "errorType" : "TranslationTimeoutError",
+    "message" : "翻譯逾時（超過 30 秒 未返回）。請再試一次；若持續發生，請確認系統翻譯服務是否正常。"
+  },
+  {
+    "duration" : "30 秒",
+    "errorType" : "TranslationCircuitOpenError",
+    "message" : "翻譯服務持續無回應，此語言組合暫時停用（約 30 秒 後恢復嘗試）。"
+  },
+  {
+    "duration" : "5 秒",
+    "errorType" : "TranslationTimeoutError",
+    "message" : "翻譯逾時（超過 5 秒 未返回）。請再試一次；若持續發生，請確認系統翻譯服務是否正常。"
+  },
+  {
+    "duration" : "5 秒",
+    "errorType" : "TranslationCircuitOpenError",
+    "message" : "翻譯服務持續無回應，此語言組合暫時停用（約 5 秒 後恢復嘗試）。"
+  },
+  {
+    "duration" : "1500 毫秒",
+    "errorType" : "TranslationTimeoutError",
+    "message" : "翻譯逾時（超過 1 秒 未返回）。請再試一次；若持續發生，請確認系統翻譯服務是否正常。"
+  },
+  {
+    "duration" : "1500 毫秒",
+    "errorType" : "TranslationCircuitOpenError",
+    "message" : "翻譯服務持續無回應，此語言組合暫時停用（約 1 秒 後恢復嘗試）。"
+  },
+  {
+    "duration" : "500 毫秒",
+    "errorType" : "TranslationTimeoutError",
+    "message" : "翻譯逾時（超過 500 毫秒 未返回）。請再試一次；若持續發生，請確認系統翻譯服務是否正常。"
+  },
+  {
+    "duration" : "500 毫秒",
+    "errorType" : "TranslationCircuitOpenError",
+    "message" : "翻譯服務持續無回應，此語言組合暫時停用（約 500 毫秒 後恢復嘗試）。"
+  },
+  {
+    "duration" : "1 毫秒",
+    "errorType" : "TranslationTimeoutError",
+    "message" : "翻譯逾時（超過 1 毫秒 未返回）。請再試一次；若持續發生，請確認系統翻譯服務是否正常。"
+  },
+  {
+    "duration" : "1 毫秒",
+    "errorType" : "TranslationCircuitOpenError",
+    "message" : "翻譯服務持續無回應，此語言組合暫時停用（約 1 毫秒 後恢復嘗試）。"
+  },
+  {
+    "duration" : "零",
+    "errorType" : "TranslationTimeoutError",
+    "message" : "翻譯逾時（超過 0 毫秒 未返回）。請再試一次；若持續發生，請確認系統翻譯服務是否正常。"
+  },
+  {
+    "duration" : "零",
+    "errorType" : "TranslationCircuitOpenError",
+    "message" : "翻譯服務持續無回應，此語言組合暫時停用（約 0 毫秒 後恢復嘗試）。"
+  }
+]

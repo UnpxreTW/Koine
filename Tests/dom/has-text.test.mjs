@@ -30,9 +30,9 @@ test("判準是 textContent 去前後空白後仍有長度", () => {
 test("零寬空白算有字、不斷行空白與位元組順序記號不算", () => {
 	// U+200B 不在 JavaScript 的 trim 定義裡，於是算有字；U+00A0 與 U+FEFF 則被 trim 去掉。
 	// worthTranslating 那側在判斷前會顯式去掉零寬空白與 soft-hyphen，此處只有 trim，兩軸判準不同。
-	assert.equal(koine.hasText(div("​")), true);
-	assert.equal(koine.hasText(div(" ")), false);
-	assert.equal(koine.hasText(div("﻿")), false);
+	assert.equal(koine.hasText(div(String.fromCodePoint(0x200b))), true);
+	assert.equal(koine.hasText(div(String.fromCodePoint(0x00a0))), false);
+	assert.equal(koine.hasText(div(String.fromCodePoint(0xfeff))), false);
 });
 
 test("文字取整棵子樹、註解與屬性不算", () => {

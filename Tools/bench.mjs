@@ -49,6 +49,8 @@ export const BASELINE_PATH = join(HERE, "bench-baseline.json");
 // 門檻才有鑑別力。段數比真實頁面多不影響用途——這是回歸偵測基準，不是體感估計。
 export const DEFAULTS = { seed: 1, sections: 60, n: 30, warmup: 3 };
 const CV_LIMIT = 0.15;
+// 密集頁的元素數：與合成頁段數同量級（505），兩份輸入的絕對時間才讀得起來。
+const DENSE_MARKED_COUNT = 500;
 const P50_GATE = 1.3;
 const P95_GATE = 1.5;
 
@@ -103,6 +105,50 @@ export function runOnce(bodyHtml) {
 	const collectMs = performance.now() - t0;
 
 	return { collectMs, counters: countersOf(segments, computedStyleCalls) };
+}
+
+/**
+ * 二次 walk：頁面已被我方翻過一輪之後再採集一次（SPA 局部更新、MutationObserver 補採都走這條）。
+ *
+ * 為什麼要單獨量：`classifyNode` [1] 的自家標記閘只有在**標記命中**時才多做事（讀標記值與當下
+ * 內容、比字串），第一次 walk 的頁面上一顆標記都沒有 ⇒ 上面那組數字量不到這條路徑，量到的
+ * 是它零增量的那一半。
+ *
+ * 計時只框第二次 `collectSegments`；建 DOM、第一次採集、插回全在計時區外。
+ * @param {string} bodyHtml
+ * @returns {{ collectMs: number, segmentCount: number, markedElements: number }}
+ */
+export function runSecondWalkOnce(bodyHtml) {
+	const { document } = parseHTML(`<!doctype html><html><body>${bodyHtml}</body></html>`);
+	globalThis.gc?.();
+	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false });
+
+	const first = koine.collectSegments(document.body, ctx, { walkId: 1 });
+	for (const s of first) {
+		if (s.state !== koine.SegmentState.PENDING) continue;
+		s.draft = `譯‹${s.source}›`;
+		s.state = koine.SegmentState.DRAFTED;
+	}
+	koine.insertTranslations(first);
+
+	const t0 = performance.now();
+	const segments = koine.collectSegments(document.body, ctx, { walkId: 2 });
+	const collectMs = performance.now() - t0;
+
+	return {
+		collectMs,
+		segmentCount: segments.length,
+		markedElements: document.querySelectorAll("[data-koine-translated]").length,
+	};
+}
+
+/**
+ * 原地換字密集頁：合成頁只有 8 顆按鈕會走原地換字（505 段中的 8 顆），標記閘的成本會整個埋在
+ * 噪音裡。這份輸入讓每一顆元素都帶標記，量的是那條路徑的**最壞情況**單價。
+ * @param {number} count
+ */
+function denseMarkedBody(count) {
+	return Array.from({ length: count }, (_, i) => `<button>送出${i}</button>`).join("");
 }
 
 /** 計數欄位——同一份輸入必為定值，可直接當回歸探針。 */
@@ -174,10 +220,30 @@ export function bench(opts = {}) {
 		if (rss > peakRssBytes) peakRssBytes = rss;
 	}
 
+	/** @param {string} bodyHtml */
+	const secondWalk = (bodyHtml) => {
+		for (let i = 0; i < warmup; i++) runSecondWalkOnce(bodyHtml);
+		const samples = [];
+		let shape = null;
+		for (let i = 0; i < n; i++) {
+			const r = runSecondWalkOnce(bodyHtml);
+			samples.push(r.collectMs);
+			shape = r;
+		}
+		return {
+			collectMs: summarize(samples),
+			segmentCount: shape.segmentCount,
+			markedElements: shape.markedElements,
+		};
+	};
+	const denseBody = denseMarkedBody(DENSE_MARKED_COUNT);
+
 	return {
 		input: { seed, sections, bodyBytes: Buffer.byteLength(body, "utf8") },
 		config: { n, warmup, gc: typeof globalThis.gc === "function" },
 		counters: last.counters,
+		// 兩份輸入的二次 walk：合成頁＝真實比例（原地換字只佔少數段），密集頁＝標記閘的最壞情況。
+		secondWalk: { synthetic: secondWalk(body), denseMarked: secondWalk(denseBody) },
 		// 同一份輸入跑 n 輪應只出現一組計數；出現多組代表採集層帶了輪次相依的狀態。
 		counterVariants: shapes.size,
 		collectMs: summarize(times),
@@ -202,6 +268,14 @@ function report(result) {
 	lines.push("");
 	lines.push(`collectMs  min ${fmt(result.collectMs.min)}  p50 ${fmt(result.collectMs.p50)}  p95 ${fmt(result.collectMs.p95)}`);
 	lines.push(`           mean ${fmt(result.collectMs.mean)}  CV ${(result.collectMs.cv * 100).toFixed(1)}%`);
+	lines.push("");
+	for (const [key, label] of [["synthetic", "二次 walk 合成頁"], ["denseMarked", "二次 walk 密集頁"]]) {
+		const w = result.secondWalk?.[key];
+		if (!w) continue;
+		lines.push(`${label}  p50 ${fmt(w.collectMs.p50)}  p95 ${fmt(w.collectMs.p95)}  mean ${fmt(w.collectMs.mean)}  CV ${(w.collectMs.cv * 100).toFixed(1)}%`);
+		lines.push(`                 標記元素 ${w.markedElements}、二次採得 ${w.segmentCount} 段`);
+	}
+	lines.push("");
 	lines.push(`peakRSS    ${result.peakRssMB} MB（行程級，含 linkedom 與 node 本身）`);
 	lines.push("");
 	lines.push(`環境       ${result.env.platform}/${result.env.arch} node ${result.env.nodeMajor}.x — ${result.env.cpu}`);
@@ -285,6 +359,36 @@ function checkTiming(baseline, result) {
 	return { failed: !p50Ok || !p95Ok, judged: true, lines };
 }
 
+/**
+ * 二次 walk 的時間比對。基準檔錄製於本欄位存在之前時只列參考值、不判定——**不當成通過**，
+ * 而是明講「這一欄還沒有基準」，免得看報告的人以為門檻守著它。
+ * @param {any} baseline
+ * @param {any} result
+ * @param {boolean} judged 主時間門檻本次是否有判定（環境相同且量測夠穩）
+ */
+function checkSecondWalk(baseline, result, judged) {
+	const lines = [];
+	let failed = false;
+	for (const [key, label] of [["synthetic", "二次 walk 合成頁"], ["denseMarked", "二次 walk 密集頁"]]) {
+		const now = result.secondWalk?.[key];
+		if (!now) continue;
+		const base = baseline.secondWalk?.[key];
+		if (!base) {
+			lines.push(`· ${label} 基準未錄（本次 p50 ${fmt(now.collectMs.p50)}）——跑一次 --record 後才納入門檻`);
+			continue;
+		}
+		if (!judged) {
+			lines.push(`· ${label} 未判定（同主時間門檻）：p50 ${fmt(base.collectMs.p50)} → ${fmt(now.collectMs.p50)}`);
+			continue;
+		}
+		const ratio = now.collectMs.p50 / base.collectMs.p50;
+		const ok = ratio <= P50_GATE;
+		if (!ok) failed = true;
+		lines.push(`${ok ? "✓" : "✗"} ${label} p50 ${fmt(base.collectMs.p50)} → ${fmt(now.collectMs.p50)}  ×${ratio.toFixed(2)}（上限 ×${P50_GATE}）`);
+	}
+	return { failed, lines };
+}
+
 function parseArgs(argv) {
 	/** @type {Record<string, any>} */
 	const out = { ...DEFAULTS, json: false, record: false, check: false };
@@ -354,8 +458,9 @@ function main(argv) {
 		// 計數先判：與環境無關的定值，不該被時間噪音擋在門外。
 		const counters = checkCounters(baseline, result);
 		const timing = checkTiming(baseline, result);
-		verdictOut.write(`\n${[...counters.lines, ...timing.lines].join("\n")}\n`);
-		if (counters.failed || timing.failed) return 1;
+		const secondWalk = checkSecondWalk(baseline, result, timing.judged);
+		verdictOut.write(`\n${[...counters.lines, ...timing.lines, ...secondWalk.lines].join("\n")}\n`);
+		if (counters.failed || timing.failed || secondWalk.failed) return 1;
 		if (!timing.judged && noisy) {
 			process.stderr.write(`\n計數通過，但時間未判定：CV ${(result.collectMs.cv * 100).toFixed(1)}% 超過 ${CV_LIMIT * 100}%，${noiseHint}\n`);
 			return 2;

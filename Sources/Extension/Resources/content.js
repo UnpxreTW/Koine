@@ -422,11 +422,40 @@ function classifyNode(node, ctx) {
 	const el = /** @type {Element} */ (node);
 	const tag = el.tagName;
 
-	// [1] 自家標記（二次 walk 高命中、最便宜）；data-koine-translated 是 §P4 button-class 原地換字
-	// 的防自吞標記——標記消失（框架重渲染換掉節點、或標記被清）即不再命中此檢查、自動視為未譯重新採集。
-	if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")
-		|| el.hasAttribute("data-koine-translated")) {
+	// [1] 自家標記（二次 walk 高命中、最便宜）。
+	// wrapper 軸（`data-koine-id`／`koine-translated` class）是我方自己建的節點，內容恆為譯文，
+	// 無條件整棵跳。
+	if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) {
 		return { disp: "SKIP_SUBTREE", cs: null };
+	}
+	// 原地換字軸的防自吞標記 `data-koine-translated` 值＝寫入當下的譯文逐字副本，
+	// 「標記值仍等於現在的內容」才代表我方譯文還在原位、該跳。
+	//
+	// 只看屬性在不在是不夠的：站台自己把同一顆節點的文字換掉（SPA 重用節點、登入/登出切文案）
+	// 時屬性會留著、譯文已被蓋掉，而那段新內容從此永遠不再被採集——標記把一段未譯的文字
+	// 鎖成已譯。改比對值之後，不等＝內容是新的，放行往下走一般分類、當作未譯重新採集。
+	//
+	// 標記消失（框架重渲染整顆換掉節點、或標記被清）仍如舊：不命中此檢查、視為未譯。
+	if (el.hasAttribute("data-koine-translated")) {
+		// 命中標記才多付這一次 getAttribute + textContent 讀取與字串比較（皆不觸發 reflow）；
+		// 未命中的節點零增量。本軸的元素在插回時過了 hasOnlyTextChildren 閘，textContent 是淺的。
+		//
+		// 判準是「當下內容**仍含**標記值」、不是全等：站台在同一顆元素上追加子節點（計數 badge、
+		// icon、sr-only 說明）時我方譯文原封不動仍在原位，全等比對卻會判成內容已換 ⇒ 該段被
+		// 當未譯重採，而採到的 source 就是我方自己的譯文——每一次 walk 都重採重譯、wrapper
+		// 一次多一個且不收斂（自吞，正是本標記要擋的事）。含就是「譯文還在」，該跳；
+		// 只有整段被換掉（不再含譯文）才放行重採。
+		//
+		// 標記值為空字串時 includes 恆真 ⇒ 退化成「有標記即跳」，與舊版本寫入的空標記
+		// （升級前已停在頁面上的元素）行為一致，刻意保留。
+		if (el.textContent.includes(el.getAttribute("data-koine-translated"))) {
+			return { disp: "SKIP_SUBTREE", cs: null };
+		}
+		// 落到這裡＝視為未譯，往下走一般分類，與任何未標記元素同路（新內容未必仍符合原地換字
+		// 判準，退回並列插回是正常結果）。**刻意不在此清除殘留的 data 屬性**：採集期不寫 DOM
+		// （§8 讀寫分離），且在走訪中途改屬性會再觸發 MutationObserver、把一次重採放大成迴圈。
+		// 殘留值一律等到插回期才處理，兩條分支各接一半、合起來沒有漏網：新內容仍走原地換字
+		// 就被新值整批蓋掉（replace 分支），退回並列插回則就地清掉（after-segment 分支）。
 	}
 
 	// [2] 硬標籤黑名單（Set.has O(1)、整棵剪枝）；MathML 命中根即整棵跳
@@ -1439,11 +1468,14 @@ function remapSpansToSource(spans, map) {
  *
  * wrapper 帶 `data-koine-id` + `koine-translated` class——再次採集時 classifyNode [1]
  * 先擋自家標記、整棵跳過，故插回不會被自己重採（§7.1 (c) 自吞防護）。
- * 只新增 sibling、不動原文節點（§7.1 (b)）。
+ * 只新增 sibling、不改動原文節點的內容（§7.1 (b)）。唯一會碰到原文節點的是**清除**：該節點
+ * 上一輪若走過原地換字、這一輪退回並列插回，插 wrapper 前會把原地換字軸留下的三個標記清掉
+ * （見下方 after-segment 分支），否則沒有任何路徑會再刷新它們。
  *
  * §9.2 例外：`anchor.insertMode === "replace"` 的段改走**原地換字**——不建 wrapper，直接覆寫
  * `block.textContent`，原文存 `title` 與 `data-koine-original`，並以 `data-koine-translated`
- * 當防自吞標記（該標記消失即視為未譯、下次採集會重新產生待譯段）。
+ * 當防自吞標記——**值＝寫入的譯文逐字副本**，標記消失或值對不上當下內容都視為未譯、下次採集
+ * 會重新產生待譯段（站台自己改字的情形見 classifyNode [1]）。
  *
  * **本分支是 replace 的唯一實作**：觸發條件（§P4 button-class／簡→繁語言對）全在採集期收斂成
  * `insertMode`，render 只看這一個鍵——兩條軸不各做一套、行為不會漂移。
@@ -1461,8 +1493,8 @@ function insertTranslations(segments, opts = {}) {
 		const text = seg.refined ?? seg.draft;            // §9.1 並列取值 refined ?? draft
 		// 型別守衛不可省，且**替 replace 分支擋的比 after-segment 更要緊**：非字串的 text 會被
 		// `block.textContent = text` 寫成 "[object Object]"，同時 `data-koine-translated` 被設上
-		// → classifyNode [1] 之後每次採集都整棵跳過，**只要該節點沒被換掉、標記也沒被清掉就不會
-		// 自癒**（見 [1] 註解列的兩種成因：框架重渲染換節點、或標記被清），而原文只剩在
+		// → 標記值與被寫壞的 textContent 恰好一致，classifyNode [1] 之後每次採集都整棵跳過，
+		// **只要該節點沒被換掉、標記沒被清掉、站台也沒再改字就不會自癒**，而原文只剩在
 		// `data-koine-original`（還原路徑尚未實作）。同一個壞值走 after-segment 只是多一個垃圾
 		// wrapper、原文完好。`seg.refined` 目前全 repo 無寫入端（§9.1 給 v2／外部的預留欄），
 		// `Segment` typedef 也沒宣告 draft／refined、tsc 抓不到壞的寫入端。
@@ -1517,12 +1549,34 @@ function insertTranslations(segments, opts = {}) {
 			// 大面積失效。title 顯示的也該是使用者看得懂的那一版，不是帶縮排的原字串。
 			// `typeof` 守衛不可省：insertTranslations 是公開匯出、呼叫端可能手搭 segment，
 			// 而 throw 會逃出整個 for 迴圈、把同批其他段一起中止（其餘防禦路徑都只 continue）。
-			if (!block.hasAttribute("title") && typeof seg.source === "string"
-				&& seg.source.length <= REPLACE_TITLE_MAX_CHARS) {
+			//
+			// `data-koine-title` 記「這顆 title 是我方寫的」：站台自己改字後同一顆節點會被重新
+			// 採集、重新覆寫（見 classifyNode [1]），沒有這個所有權標記就分不出「元素本來有 title」
+			// 與「title 是上一輪的我方原文」，前者不能碰、後者不刷新就會留著一句對不上目前內容的
+			// 舊原文當 tooltip。
+			//
+			// 標記存**寫進去的 title 逐字副本**、不是空值，理由與 `data-koine-translated` 同一條：
+			// 只記「曾經寫過」分不出站台事後自己改了 `title`——站台改字時一併設自己的 tooltip，
+			// 下一輪就會把它當成我方上一輪的字串覆寫掉，且 `data-koine-original` 只存內文、無還原路徑。
+			// 現值等於標記值才是「還是我方那一份」，才可以刷新。
+			const titleOwned = block.hasAttribute("data-koine-title")
+				&& block.getAttribute("title") === block.getAttribute("data-koine-title");
+			const titleFits = typeof seg.source === "string"
+				&& seg.source.length <= REPLACE_TITLE_MAX_CHARS;
+			if ((!block.hasAttribute("title") || titleOwned) && titleFits) {
 				block.setAttribute("title", seg.source);
+				block.setAttribute("data-koine-title", seg.source);
+			} else if (titleOwned) {
+				// 我方上一輪寫的 title 這次配不上（新原文超過長度閘、或非字串）：留著就是一句
+				// 對不上目前內文的舊原文，連同所有權標記一起撤掉，不留對不上的值。
+				block.removeAttribute("title");
+				block.removeAttribute("data-koine-title");
 			}
 			block.textContent = text;                               // KO-6 直接換
-			block.setAttribute("data-koine-translated", "");        // KO-7 防自吞標記（消失即視為未譯）
+			// KO-7 防自吞標記：值＝剛寫進去的譯文逐字副本。classifyNode [1] 拿它跟當下的
+			// textContent 比，仍含它才跳過（站台追加子節點時譯文還在原位、照舊跳過）；標記消失、
+			// 或整段被換掉到不再含這份副本，才視為未譯、下次採集重新產生待譯段。
+			block.setAttribute("data-koine-translated", text);
 			inserted.push(block);
 			continue;
 		}
@@ -1530,6 +1584,23 @@ function insertTranslations(segments, opts = {}) {
 		if (typeof block.after !== "function") continue;
 		const doc = block.ownerDocument;
 		if (!doc) continue;
+		// 這一段上一輪走原地換字、這一輪落到並列插回：站台把文字換成新內容後重新採集，而新原文
+		// 不再符合原地換字判準（按鈕軸超過 BUTTON_CLASS_MAX_CHARS 是最常見的一種），
+		// decideInsertMode 就會改回 after-segment。原地換字軸留在元素上的三個標記全部指向**上一輪**
+		// 的內容，而刷新它們的碼只寫在 replace 分支 ⇒ 不在這裡清，這顆元素會永遠帶著一句對不上
+		// 內文的 tooltip 與停在上一輪的快照／防自吞標記，往後每一輪都落在這條路徑、沒有人會刷新。
+		// 清除與 wrapper 的插入同屬寫入期，不違 §8 讀寫分離。
+		if (typeof block.hasAttribute === "function" && block.hasAttribute("data-koine-translated")) {
+			block.removeAttribute("data-koine-translated");
+			block.removeAttribute("data-koine-original");
+			// title 只撤我方那一份：現值與所有權標記逐字相同才算數（站台事後自己設的 tooltip 不碰，
+			// 判準與 replace 分支的 titleOwned 同一條）。所有權標記本身無論如何都撤——title 已不歸
+			// 我方所有，留著只會讓下一輪誤判擁有權。
+			const ownsTitle = block.hasAttribute("data-koine-title")
+				&& block.getAttribute("title") === block.getAttribute("data-koine-title");
+			if (ownsTitle) block.removeAttribute("title");
+			block.removeAttribute("data-koine-title");
+		}
 		const wrapper = doc.createElement(tag);
 		wrapper.setAttribute("data-koine-id", seg.id);
 		wrapper.className = "koine-translated";

@@ -63,6 +63,29 @@ test("value 只在按鈕型 input 上採：submit 採、text 不採", () => {
 	assert.equal(segs[0].anchor.attr, "value");
 });
 
+test("具名 submit 的 value 不採：它會跟著表單送出", () => {
+	const doc = docFrom(`<form><input type="submit" name="commit" value="Save"><input type="submit" value="Send now"></form>`);
+	const segs = attrSegs(translateOnce(doc));
+	assert.deepEqual(segs.map((s) => s.source), ["Send now"]);
+	// 整輪跑完後具名 submit 的送出值必須逐字不動、也不得留下任何我方標記。
+	const named = doc.querySelector(`input[name="commit"]`);
+	assert.equal(named.getAttribute("value"), "Save");
+	assert.equal(named.hasAttribute("data-koine-translated-value"), false);
+	assert.equal(named.hasAttribute("data-koine-original-value"), false);
+});
+
+test("submit 的 name 為空字串時照採：空 name 的欄位不進 form data set", () => {
+	const doc = docFrom(`<form><input type="submit" name="" value="Continue"></form>`);
+	const segs = attrSegs(collect(doc));
+	assert.deepEqual(segs.map((s) => s.source), ["Continue"]);
+});
+
+test("具名的 button／reset 照採：這兩型從不參與送出", () => {
+	const doc = docFrom(`<form><input type="button" name="a" value="Show more"><input type="reset" name="b" value="Clear"></form>`);
+	const segs = attrSegs(collect(doc));
+	assert.deepEqual(segs.map((s) => s.source), ["Show more", "Clear"]);
+});
+
 test("alt 只在 type=image 的 input 上採", () => {
 	const yes = attrSegs(collect(docFrom(`<input type="image" alt="Submit form">`)));
 	assert.deepEqual(yes.map((s) => s.anchor.attr), ["alt"]);

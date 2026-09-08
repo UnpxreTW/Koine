@@ -50,7 +50,8 @@ const OPAQUE_INLINE_TAGS = new Set(["CODE", "TIME"]);
  * `classifyNode` [9] 擋掉，收了也只會是永遠走不到的碼。
  *
  * 白名單依標籤收窄、不是「見到屬性就收」：同一個 `value` 在 `<input type="text">` 上是使用者
- * 資料（翻了就是竄改表單內容），只有按鈕型 input 的 `value` 才是面板文字（見 attributeApplies）。
+ * 資料（翻了就是竄改表單內容），只有按鈕型 input 的 `value` 才可能是面板文字。按鈕型裡 `submit`
+ * 還要再扣掉一種——它按下去會把自己的 `(name, value)` 一起送出，見 attributeApplies。
  */
 const ATTRIBUTE_TARGETS = new Map([
 	["IMG", ["alt"]],
@@ -60,6 +61,23 @@ const ATTRIBUTE_TARGETS = new Map([
 
 /** §3.9 `value` 是面板文字（而非使用者資料）的 input 型別。 */
 const VALUE_AS_LABEL_INPUT_TYPES = new Set(["button", "submit", "reset"]);
+
+/**
+ * §3.9 這顆 `<input>` 的 `value` 會不會跟著表單送出。
+ *
+ * `button`／`reset` 從不參與送出、`image` 送的是 `name.x`／`name.y`（值不進去），只有 `submit`
+ * 會把自己的 `(name, value)` 附進 form data set——前提是它有非空的 `name`（規範建構 entry list
+ * 時，`name` 缺席或為空字串的欄位一律跳過）。這種按鈕的 `value` 同時是面板文字**和**送給伺服端
+ * 的指令值（`<input type="submit" name="commit" value="Save">` 是常見框架的預設輸出），覆寫它
+ * 等於改掉送出的資料：伺服端依 value 分派的分支會失配，前端以 `btn.value === "Show"` 判狀態的
+ * 碼也一起失效。⇒ 這種按鈕整顆不採，寧可漏譯一顆按鈕，不竄改使用者送出的內容。
+ * @param {Element} el
+ * @param {string} type 已正規化的 `type` 值
+ * @returns {boolean}
+ */
+function valueIsSubmittedWithForm(el, type) {
+	return type === "submit" && (el.getAttribute("name") || "") !== "";
+}
 /** §3.9 `placeholder` 有意義的 input 型別（白名單、不是黑名單：新型別預設不收）。 */
 const PLACEHOLDER_INPUT_TYPES = new Set([
 	"text", "search", "url", "tel", "email", "password", "number",
@@ -77,7 +95,10 @@ function attributeApplies(el, attr) {
 	// 缺 type 的 `<input>` 依規範等同 type="text"。
 	const type = (el.getAttribute("type") || "text").toLowerCase().trim();
 	if (attr === "alt") return type === "image";                          // 圖片按鈕的替代文字
-	if (attr === "value") return VALUE_AS_LABEL_INPUT_TYPES.has(type);    // 按鈕面板文字
+	// 按鈕面板文字，但扣掉會把 value 一起送出的具名 submit（見 valueIsSubmittedWithForm）。
+	if (attr === "value") {
+		return VALUE_AS_LABEL_INPUT_TYPES.has(type) && !valueIsSubmittedWithForm(el, type);
+	}
 	if (attr === "placeholder") return PLACEHOLDER_INPUT_TYPES.has(type);
 	return false;
 }

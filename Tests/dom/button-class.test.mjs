@@ -3,7 +3,7 @@
 //
 // 跑道 A（linkedom）：P4 button-class 元素原地換字特徵化測試。
 // button-class 窄判準（BUTTON／LABEL／role=button + ≤20 字 + 無 block 子）命中時直接原地換字，
-// 原文存 title + data-koine-original，並以 data-koine-translated 防自吞；標記消失（重渲染）
+// 原文存 data-koine-original，並以 data-koine-translated 防自吞；標記消失（重渲染）
 // 即視為未譯、重新採集會產生新段——不加 wrapper。
 
 import { test } from "node:test";

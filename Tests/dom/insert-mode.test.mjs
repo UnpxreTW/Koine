@@ -143,33 +143,29 @@ test("②軸不得撿走①軸刻意退回的長按鈕（長度閘是按鈕排�
 	assert.equal(segs[0].anchor.insertMode, "after-segment", "②軸不得繞過①軸的長度閘");
 });
 
-test("replace 不覆寫元素既有的 title（站台自己的提示不可被抹掉、且無還原路徑）", () => {
+test("原地換字不碰元素既有的 title：站台的提示改由屬性軸自己翻，原值另存一份", () => {
 	const doc = docFrom(`<div lang="zh-CN"><p id="p" title="站台原有提示">简体段落内容。</p></div>`);
 	const segs = draftPending(collectWith(doc));
 	koine.insertTranslations(segs);
 	const p = doc.getElementById("p");
-	assert.equal(p.getAttribute("title"), "站台原有提示", "既有 title 必須保留");
-	assert.equal(p.getAttribute("data-koine-original"), "简体段落内容。", "原文仍存 data 屬性");
-	assert.equal(p.textContent, segs[0].draft, "換字本身照做");
+	const body = segs.find((x) => x.anchor.insertMode === "replace");
+	assert.equal(p.getAttribute("title"), "譯‹站台原有提示›", "title 自成一段、應換成譯文");
+	assert.equal(p.getAttribute("data-koine-original-title"), "站台原有提示", "屬性軸應留原值");
+	assert.equal(p.getAttribute("data-koine-original"), "简体段落内容。", "內文原文仍存 data 屬性");
+	assert.equal(p.textContent, body.draft, "換字本身照做");
 });
 
-test("過長的原文不寫進 title（整段 tooltip 會被輔助技術當可及描述唸出）", () => {
+test("原文一律不寫進 title：長短都一樣（tooltip 現在只承載譯文）", () => {
 	const long = "这是一段很长的简体中文段落内容用来测试标题属性的长度上限行为是否正确。";
-	assert.ok(long.length > koine.REPLACE_TITLE_MAX_CHARS, "前提：測試字串需超過上限");
-	const doc = docFrom(`<div lang="zh-CN"><p id="p">${long}</p></div>`);
-	const segs = draftPending(collectWith(doc));
-	koine.insertTranslations(segs);
-	const p = doc.getElementById("p");
-	assert.ok(!p.hasAttribute("title"), "超過上限不寫 title");
-	assert.equal(p.getAttribute("data-koine-original"), long, "原文仍完整存在 data 屬性");
-	assert.equal(p.textContent, segs[0].draft);
-});
-
-test("短原文仍寫 title（按鈕軸的既有行為不因新規則改變）", () => {
-	const doc = docFrom(`<div lang="zh-CN"><p id="p">简体短句。</p></div>`);
-	const segs = draftPending(collectWith(doc));
-	koine.insertTranslations(segs);
-	assert.equal(doc.getElementById("p").getAttribute("title"), "简体短句。");
+	for (const source of [long, "简体短句。"]) {
+		const doc = docFrom(`<div lang="zh-CN"><p id="p">${source}</p></div>`);
+		const segs = draftPending(collectWith(doc));
+		koine.insertTranslations(segs);
+		const p = doc.getElementById("p");
+		assert.ok(!p.hasAttribute("title"), `原文（${source.length} 字）不得寫進 title`);
+		assert.equal(p.getAttribute("data-koine-original"), source, "原文仍完整存在 data 屬性");
+		assert.equal(p.textContent, segs[0].draft);
+	}
 });
 
 test('lang="" ＝語言未知、不繼承祖先（HTML 規範）：簡中頁內的空 lang 區塊不得就地取代', () => {
@@ -201,18 +197,18 @@ test('lang="" 在兩條語言查詢路徑上答案一致（下行增量 vs close
 	assert.equal(koine.isSimplifiedChinese(""), false, '"" 不是簡中語碼');
 });
 
-test("縮排排版的按鈕仍寫 title：長度閘比的是 normalize 後的 source、不是原始 textContent", () => {
-	// 多行排版是真實 HTML 的主流寫法。窄判準卡的是 source.length（normalize 後），若 title
-	// 閘改比 snapshot.length（含縮排）就會兩邊比錯，同一顆按鈕寫一行有 title、寫三行沒有。
+test("縮排排版的按鈕：data-koine-original 存逐字快照（連縮排一起留，還原用）", () => {
+	// 多行排版是真實 HTML 的主流寫法：source 是 normalize 後的展示字串，還原要的是原始快照，
+	// 兩者在這種排版下必然不同——存錯邊就還原不回原本的空白。
 	const doc = docFrom(`<button id="b">\n          确认提交\n        </button>`);
 	const segs = collectWith(doc);
 	assert.equal(segs[0].source, "确认提交");
-	assert.ok(segs[0].meta.replaceSnapshot.length > koine.REPLACE_TITLE_MAX_CHARS, "前提：原始快照含縮排、超過上限");
+	assert.notEqual(segs[0].meta.replaceSnapshot, segs[0].source, "前提：原始快照含縮排、與 source 不同");
 
 	draftPending(segs);
 	koine.insertTranslations(segs);
 	const b = doc.getElementById("b");
-	assert.equal(b.getAttribute("title"), "确认提交", "title 應為 normalize 後的原文、不帶縮排");
+	assert.ok(!b.hasAttribute("title"), "原文不再寫進 tooltip");
 	assert.equal(
 		b.getAttribute("data-koine-original"), segs[0].meta.replaceSnapshot,
 		"data-koine-original 仍存逐字快照（還原用、連空白一起留）",
@@ -344,7 +340,7 @@ test("render 分派只看 anchor.insertMode：簡中段原地換字、行為與 
 	assert.equal(inserted.length, 1);
 	assertSame(inserted[0], p, "replace 應回傳原元素本身、非新建 wrapper");
 	assert.equal(p.textContent, segs[0].draft, "textContent 應換成譯文");
-	assert.equal(p.getAttribute("title"), "这是简体中文段落。", "原文應存 title");
+	assert.ok(!p.hasAttribute("title"), "原文不得寫進 title");
 	assert.equal(p.getAttribute("data-koine-original"), "这是简体中文段落。", "原文應存 data-koine-original");
 	assert.ok(p.hasAttribute("data-koine-translated"), "缺防自吞標記");
 	assert.equal(doc.querySelectorAll(".koine-translated").length, 0, "replace 不應建 wrapper");

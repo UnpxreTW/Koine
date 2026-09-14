@@ -59,6 +59,21 @@ const ATTRIBUTE_TARGETS = new Map([
 	["INPUT", ["alt", "placeholder", "value"]],
 ]);
 
+/**
+ * §3.9 `title` 是全域屬性、不掛在任何標籤上，故不進上面那張表。
+ *
+ * 宿主資格另有一條（見 collectAttributes 的 `walked`）：**被走訪到的元素**恆可採——它已過
+ * classifyNode 的全部自身閘（隱藏／`translate="no"`／`display:none`／自身 lang 已達標）。
+ * 因標籤黑名單整棵跳過的元素只有上表那三個宿主可採；`<script>`／`<head>`／`<meta>` 的 tooltip
+ * 根本不顯示，`<svg>`／`<pre>` 這類「整棵視為不可採內容」的 tooltip 留作日後的擴充點。
+ */
+const GLOBAL_ATTRIBUTE_TARGET = "title";
+
+/** §3.9 走訪熱路徑上的前置守衛：沒有 `title` 的元素連屬性採集都不必進（見 collect）。 */
+function hasOwnTitle(el) {
+	return typeof el.hasAttribute === "function" && el.hasAttribute(GLOBAL_ATTRIBUTE_TARGET);
+}
+
 /** §3.9 `value` 是面板文字（而非使用者資料）的 input 型別。 */
 const VALUE_AS_LABEL_INPUT_TYPES = new Set(["button", "submit", "reset"]);
 
@@ -91,6 +106,7 @@ const PLACEHOLDER_INPUT_TYPES = new Set([
  * @returns {boolean}
  */
 function attributeApplies(el, attr) {
+	if (attr === GLOBAL_ATTRIBUTE_TARGET) return true;   // 全域屬性，不受 <input type> 那層收窄
 	if (el.tagName !== "INPUT") return true;
 	// 缺 type 的 `<input>` 依規範等同 type="text"。
 	const type = (el.getAttribute("type") || "text").toLowerCase().trim();
@@ -150,14 +166,6 @@ const NODE_COMMENT = 8;
 
 /** button-class 段的譯文換字上限字數（超過退回一般 block／wrapper 流程）。 */
 const BUTTON_CLASS_MAX_CHARS = 20;
-
-/**
- * §9.2 replace 段把原文寫進 `title` 的長度上限。`title` 是「短標籤的 tooltip」慣例：整段文章
- * 塞進去會變成巨大 tooltip，且 `title` 會被輔助技術當成該元素的可及描述唸出。沿用 button-class
- * 的「短互動文字」門檻、不另立第二套長度標準——超過就只留 `data-koine-original`（純資料、
- * 不影響 hover 與可及名稱）。
- */
-const REPLACE_TITLE_MAX_CHARS = BUTTON_CLASS_MAX_CHARS;
 
 /** @param {Element} el */
 function hasButtonRole(el) {
@@ -1188,8 +1196,7 @@ function collectSegments(root, ctx, opts = {}) {
 		// ①軸的元素沒通過窄判準＝刻意退回（太長／有 block 子／有元素子代），②軸不得從旁邊撿走
 		// ——否則 21 字的按鈕在簡中頁會繞過 ≤20 字閘，換字照樣撐破按鈕排版。
 		if (isButtonClassElement(el)) return "after-segment";
-		// 文件／頁面根不就地取代：覆寫 <body> 的 textContent、或把整段原文寫成 <body title>
-		// 都不是「段」層級該做的事。
+		// 文件／頁面根不就地取代：覆寫 <body> 的 textContent 不是「段」層級該做的事。
 		if (el.tagName === "BODY" || el.tagName === "HTML") return "after-segment";
 		if (!isTraditionalChineseTarget(ctx.targetLang)) return "after-segment";
 		const label = labels.get(blockNode);
@@ -1223,6 +1230,14 @@ function collectSegments(root, ctx, opts = {}) {
 				collectAttributes(child);
 				continue; // 不切段：跳過不可見/無關子樹，buffer 續接
 			}
+			// 走訪到的元素：採它自身的 `title`（全域屬性，任何標籤都可能掛）。放在所有分支之前、
+			// 每顆子元素恰好一次——底下三條路各自只處理子孫（遞迴 collect／collectAttributesWithin
+			// 都從子節點起算），不會重複採同一顆。
+			// 熱路徑：`hasAttribute` 這一道守衛寫在呼叫端，讓沒有 `title` 的絕大多數元素連函式
+			// 呼叫都省掉（collectAttributes 內仍自己再檢一次，不依賴呼叫端）。
+			if (child.nodeType === NODE_ELEMENT && hasOwnTitle(/** @type {Element} */ (child))) {
+				collectAttributes(child, { walked: true });
+			}
 			if (child.nodeType === NODE_ELEMENT && /** @type {Element} */ (child).tagName === "BR") {
 				buffer.push(child); // §6.2 BR→\n（extractText 處理）
 				continue;
@@ -1250,52 +1265,79 @@ function collectSegments(root, ctx, opts = {}) {
 	 * 它只是把原本零產出的空元素（`<img>`／`<input>`）第一次變成採集對象。
 	 * @param {Node} node  走訪中被標成 SKIP_SUBTREE 的子節點
 	 */
-	function collectAttributes(node) {
+	function collectAttributes(node, opts = {}) {
 		if (node.nodeType !== NODE_ELEMENT) return;
 		const el = /** @type {Element} */ (node);
 		const attrs = ATTRIBUTE_TARGETS.get(el.tagName);
-		if (!attrs) return;
-		// 這批標籤在 classifyNode [2] 的標籤黑名單就返回了，[1]／[5]／[6]／[8]／[9] 五道**自身**
-		// 訊號對它們從未評估過——一律在此補齊，判準直接借既有函式、不另寫一份（`<img hidden alt>`、
-		// `<input translate="no" placeholder>`、`display:none` 的輸入框都該一個字都不採）。
-		// 祖先方向的剪枝則是免費的：祖先落 SKIP_SUBTREE 時 collect 根本不會遞迴進來。
-		if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) return;
-		if (opaqueSelfSkips(el, ctx)) return;                 // [5] 屬性訊號 + [6] translate="no" + [9] style
-		if (isAlreadyTargetLang(el, ctx.targetLang)) return;  // [8] 自身 lang 已是目標語
-		for (const attr of attrs) {
-			if (!attributeApplies(el, attr)) continue;
-			const raw = el.getAttribute(attr);
-			if (raw == null) continue;
-			// 逐屬性防自吞：標記值＝上一輪寫進去的譯文逐字副本，與現值全等＝我方譯文還在原位、
-			// 這個屬性這一輪不必再採。不等＝站台自己改過（SPA 換文案），當作新內容重新採集。
-			//
-			// 判準用**全等**、不是段落軸那條「仍含」：段落軸要容忍站台在同一顆元素上追加子節點
-			// （計數 badge、icon）而譯文仍在原位，屬性值沒有子節點這回事，改了就是整個被換掉。
-			// 殘留的兩個 data 屬性一律留到插回期才處理（§8 讀寫分離：採集期不寫 DOM）——
-			// 新值仍走屬性軸就被整批蓋掉，是這條路上唯一的結局。
-			if (el.getAttribute(attributeTranslatedMark(attr)) === raw) continue;
-			const source = normalizeSource(raw);
-			if (source === "") continue;
-			const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "attribute" });
-			const id = makeId(walkId, order);
-			const region = regionOfBlock(el);
-			// anchor.block 是 Element ⇒ observeSegments 的 observe 與 defaultMeasure 的 rect 量測
-			// 天生可用，屬性軸不需要另開一條排程路徑。refNode 只有並列插回會讀。
-			const anchor = { block: el, insertMode: "replace-attr", attr, refNode: null };
-			if (!wt.worth) {
-				segments.push({
-					id, order, region, source, kind: "attribute", anchor,
-					state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
-				});
-				order++;
-				continue;
-			}
+		// 走訪到的元素才有資格採全域的 `title`（見 GLOBAL_ATTRIBUTE_TARGET）；表格裡那三個宿主
+		// 即使因標籤黑名單整棵跳過也算數——它們是渲染出來的圖片與表單控制項，tooltip 看得到。
+		//
+		// 第三種宿主＝**帶著我方原地換字標記而被整棵跳過的元素**。它是被我方自己的標記擋下的，
+		// 不是被頁面的訊號擋下的：上一輪走訪時它過了全部自身閘、也確實渲染在頁面上。少了這條，
+		// 站台事後在這種元素上新增或改寫 `title`（內文一個字沒動 ⇒ 標記仍命中 ⇒ 恆走 SKIP_SUBTREE）
+		// 就永遠採不到，是一條不會自癒的漏譯。下面的自身訊號補檢照跑，事後才加的 `hidden` 仍擋得住。
+		const takesTitle = el.hasAttribute(GLOBAL_ATTRIBUTE_TARGET)
+			&& (opts.walked === true || !!attrs || el.hasAttribute("data-koine-translated"));
+		// 熱路徑快速退場：頁面上絕大多數元素既不在白名單、也沒有 `title`，到此為止只付一次
+		// Map.get 與一次 hasAttribute（皆不觸發 reflow）。下面的自身訊號補檢因此不會攤到每顆元素。
+		if (!attrs && !takesTitle) return;
+		if (opts.walked === true) {
+			// 走訪到的元素已由 classifyNode 評估過 [1]／[5]／[6]／[9]（過了才會是 WALK／OPAQUE），
+			// 在此重跑只是白付一次 getStyle 與一輪屬性讀取。**唯獨 [8] 要補**：OPAQUE 的 return
+			// 排在 [8] 之前（見 opaqueSelfSkips 的註解），`<code lang="zh-TW" title="…">` 的自身
+			// lang 從未被評估過。
+			if (isAlreadyTargetLang(el, ctx.targetLang)) return;
+		} else {
+			// 這批標籤在 classifyNode [2] 的標籤黑名單就返回了，[1]／[5]／[6]／[8]／[9] 五道**自身**
+			// 訊號對它們從未評估過——一律在此補齊，判準直接借既有函式、不另寫一份（`<img hidden alt>`、
+			// `<input translate="no" placeholder>`、`display:none` 的輸入框都該一個字都不採）。
+			// 祖先方向的剪枝則是免費的：祖先落 SKIP_SUBTREE 時 collect 根本不會遞迴進來。
+			if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) return;
+			if (opaqueSelfSkips(el, ctx)) return;                 // [5] 屬性訊號 + [6] translate="no" + [9] style
+			if (isAlreadyTargetLang(el, ctx.targetLang)) return;  // [8] 自身 lang 已是目標語
+		}
+		if (attrs) for (const attr of attrs) collectOneAttribute(el, attr);
+		if (takesTitle) collectOneAttribute(el, GLOBAL_ATTRIBUTE_TARGET);
+	}
+
+	/**
+	 * §3.9 單一屬性成段（白名單與剪枝由呼叫端 collectAttributes 判完）。
+	 * @param {Element} el
+	 * @param {string} attr
+	 */
+	function collectOneAttribute(el, attr) {
+		if (!attributeApplies(el, attr)) return;
+		const raw = el.getAttribute(attr);
+		if (raw == null) return;
+		// 逐屬性防自吞：標記值＝上一輪寫進去的譯文逐字副本，與現值全等＝我方譯文還在原位、
+		// 這個屬性這一輪不必再採。不等＝站台自己改過（SPA 換文案），當作新內容重新採集。
+		//
+		// 判準用**全等**、不是段落軸那條「仍含」：段落軸要容忍站台在同一顆元素上追加子節點
+		// （計數 badge、icon）而譯文仍在原位，屬性值沒有子節點這回事，改了就是整個被換掉。
+		// 殘留的兩個 data 屬性一律留到插回期才處理（§8 讀寫分離：採集期不寫 DOM）——
+		// 新值仍走屬性軸就被整批蓋掉，是這條路上唯一的結局。
+		if (el.getAttribute(attributeTranslatedMark(attr)) === raw) return;
+		const source = normalizeSource(raw);
+		if (source === "") return;
+		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "attribute" });
+		const id = makeId(walkId, order);
+		const region = regionOfBlock(el);
+		// anchor.block 是 Element ⇒ observeSegments 的 observe 與 defaultMeasure 的 rect 量測
+		// 天生可用，屬性軸不需要另開一條排程路徑。refNode 只有並列插回會讀。
+		const anchor = { block: el, insertMode: "replace-attr", attr, refNode: null };
+		if (!wt.worth) {
 			segments.push({
 				id, order, region, source, kind: "attribute", anchor,
-				state: SegmentState.PENDING, meta: { replaceSnapshot: raw },
+				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 			});
 			order++;
+			return;
 		}
+		segments.push({
+			id, order, region, source, kind: "attribute", anchor,
+			state: SegmentState.PENDING, meta: { replaceSnapshot: raw },
+		});
+		order++;
 	}
 
 	/**
@@ -1308,6 +1350,9 @@ function collectSegments(root, ctx, opts = {}) {
 		for (const [child, label] of effectiveChildren(node)) {
 			if (child.nodeType !== NODE_ELEMENT) continue;
 			if (label.disp === "SKIP_SUBTREE") { collectAttributes(child); continue; }
+			// 走訪到的元素自身仍可能掛 `title`（`<p><a title="…">…</a></p>`）——採它、不下探
+			// 的規則不變：OPAQUE 是不可分割原子，它的子樹不再走。
+			if (hasOwnTitle(child)) collectAttributes(child, { walked: true });
 			if (label.disp === "OPAQUE_INLINE") continue;
 			collectAttributesWithin(child);
 		}
@@ -1652,7 +1697,7 @@ function remapSpansToSource(spans, map) {
  * （見下方 after-segment 分支），否則沒有任何路徑會再刷新它們。
  *
  * §9.2 例外：`anchor.insertMode === "replace"` 的段改走**原地換字**——不建 wrapper，直接覆寫
- * `block.textContent`，原文存 `title` 與 `data-koine-original`，並以 `data-koine-translated`
+ * `block.textContent`，原文存 `data-koine-original`，並以 `data-koine-translated`
  * 當防自吞標記——**值＝寫入的譯文逐字副本**，標記消失或值對不上當下內容都視為未譯、下次採集
  * 會重新產生待譯段（站台自己改字的情形見 classifyNode [1]）。
  *
@@ -1733,46 +1778,10 @@ function insertTranslations(segments, opts = {}) {
 			if (!hasOnlyTextChildren(/** @type {Element} */ (block))) continue;
 			// KO-7 原文存 data 屬性（純資料、無 AT 影響）。這裡刻意存**未過濾的 snapshot**、不是
 			// seg.source——它是還原用的逐字副本，連原始空白一起留住才還原得回去。
-			// ⚠ 給未來寫還原路徑的人：要還原一律讀 `data-koine-original`（逐字），**不要讀 `title`**
-			// ——三個理由，最後一個最危險：①它是 normalize 後的展示字串；②長度超標時根本不存在；
-			// ③元素本來就有 `title` 時下面的守衛會**刻意保留站台自己的字串**，於是 `title` 會是一個
-			// 「長得很像原文」的錯字串。前兩者的失敗看得見（讀到空的），第三者會靜默寫錯回頁面。
+			// ⚠ 給未來寫還原路徑的人：內文一律讀 `data-koine-original`（逐字），`title` 另有自己的
+			// 一份備份（`data-koine-original-title`，見屬性軸）——兩條軸各存各的、不互相代讀。
 			block.setAttribute("data-koine-original", snapshot);
-			// KO-6 原文存 title tooltip，但兩個前提：①元素本來沒有 `title`——覆寫會抹掉站台自己的
-			// 提示且無還原路徑；②原文短到適合當 tooltip（見 REPLACE_TITLE_MAX_CHARS）。
-			// 不符就只留 `data-koine-original`。
-			//
-			// **長度與內容都取 `seg.source`、不取 `snapshot`**：snapshot 是原始 textContent，含
-			// HTML 縮排；而①軸的 BUTTON_CLASS_MAX_CHARS 卡的是 normalize 後的 source。兩者比錯
-			// 邊，`<button>\n  确认提交\n</button>` 這種多行排版（真實 HTML 的主流寫法）會算成
-			// 24 字而靜默失去 title，同一顆按鈕寫成一行就有——KO-6 的 tooltip 會在真實頁面上
-			// 大面積失效。title 顯示的也該是使用者看得懂的那一版，不是帶縮排的原字串。
-			// `typeof` 守衛不可省：insertTranslations 是公開匯出、呼叫端可能手搭 segment，
-			// 而 throw 會逃出整個 for 迴圈、把同批其他段一起中止（其餘防禦路徑都只 continue）。
-			//
-			// `data-koine-title` 記「這顆 title 是我方寫的」：站台自己改字後同一顆節點會被重新
-			// 採集、重新覆寫（見 classifyNode [1]），沒有這個所有權標記就分不出「元素本來有 title」
-			// 與「title 是上一輪的我方原文」，前者不能碰、後者不刷新就會留著一句對不上目前內容的
-			// 舊原文當 tooltip。
-			//
-			// 標記存**寫進去的 title 逐字副本**、不是空值，理由與 `data-koine-translated` 同一條：
-			// 只記「曾經寫過」分不出站台事後自己改了 `title`——站台改字時一併設自己的 tooltip，
-			// 下一輪就會把它當成我方上一輪的字串覆寫掉，且 `data-koine-original` 只存內文、無還原路徑。
-			// 現值等於標記值才是「還是我方那一份」，才可以刷新。
-			const titleOwned = block.hasAttribute("data-koine-title")
-				&& block.getAttribute("title") === block.getAttribute("data-koine-title");
-			const titleFits = typeof seg.source === "string"
-				&& seg.source.length <= REPLACE_TITLE_MAX_CHARS;
-			if ((!block.hasAttribute("title") || titleOwned) && titleFits) {
-				block.setAttribute("title", seg.source);
-				block.setAttribute("data-koine-title", seg.source);
-			} else if (titleOwned) {
-				// 我方上一輪寫的 title 這次配不上（新原文超過長度閘、或非字串）：留著就是一句
-				// 對不上目前內文的舊原文，連同所有權標記一起撤掉，不留對不上的值。
-				block.removeAttribute("title");
-				block.removeAttribute("data-koine-title");
-			}
-			block.textContent = text;                               // KO-6 直接換
+			block.textContent = text;                               // 原地換字
 			// KO-7 防自吞標記：值＝剛寫進去的譯文逐字副本。classifyNode [1] 拿它跟當下的
 			// textContent 比，仍含它才跳過（站台追加子節點時譯文還在原位、照舊跳過）；標記消失、
 			// 或整段被換掉到不再含這份副本，才視為未譯、下次採集重新產生待譯段。
@@ -1786,20 +1795,14 @@ function insertTranslations(segments, opts = {}) {
 		if (!doc) continue;
 		// 這一段上一輪走原地換字、這一輪落到並列插回：站台把文字換成新內容後重新採集，而新原文
 		// 不再符合原地換字判準（按鈕軸超過 BUTTON_CLASS_MAX_CHARS 是最常見的一種），
-		// decideInsertMode 就會改回 after-segment。原地換字軸留在元素上的三個標記全部指向**上一輪**
-		// 的內容，而刷新它們的碼只寫在 replace 分支 ⇒ 不在這裡清，這顆元素會永遠帶著一句對不上
-		// 內文的 tooltip 與停在上一輪的快照／防自吞標記，往後每一輪都落在這條路徑、沒有人會刷新。
+		// decideInsertMode 就會改回 after-segment。原地換字軸留在元素上的兩個標記都指向**上一輪**
+		// 的內容，而刷新它們的碼只寫在 replace 分支 ⇒ 不在這裡清，這顆元素會永遠帶著停在上一輪的
+		// 快照與防自吞標記，往後每一輪都落在這條路徑、沒有人會刷新。
 		// 清除與 wrapper 的插入同屬寫入期，不違 §8 讀寫分離。
+		// `title` 不在此處理：它自成一段（屬性軸），刷新與清除由該軸自己的標記負責。
 		if (typeof block.hasAttribute === "function" && block.hasAttribute("data-koine-translated")) {
 			block.removeAttribute("data-koine-translated");
 			block.removeAttribute("data-koine-original");
-			// title 只撤我方那一份：現值與所有權標記逐字相同才算數（站台事後自己設的 tooltip 不碰，
-			// 判準與 replace 分支的 titleOwned 同一條）。所有權標記本身無論如何都撤——title 已不歸
-			// 我方所有，留著只會讓下一輪誤判擁有權。
-			const ownsTitle = block.hasAttribute("data-koine-title")
-				&& block.getAttribute("title") === block.getAttribute("data-koine-title");
-			if (ownsTitle) block.removeAttribute("title");
-			block.removeAttribute("data-koine-title");
 		}
 		const wrapper = doc.createElement(tag);
 		wrapper.setAttribute("data-koine-id", seg.id);
@@ -2140,7 +2143,7 @@ const __koineExports = {
 	classifyZhVariant, isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
 	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,
 	attributeApplies, attributeOriginalMark, attributeTranslatedMark,
-	REPLACE_TITLE_MAX_CHARS,
+	GLOBAL_ATTRIBUTE_TARGET,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,

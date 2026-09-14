@@ -78,6 +78,25 @@ test("同一顆元素的 title 只採一次（走訪與行內補走兩條路不�
 	assert.deepEqual(titleSources(segs), ["外層", "內層"]);
 });
 
+test("display:contents 容器自身的 title 採得到（它被攤平、從不出現在採集迴圈裡）", () => {
+	const segs = collect(docFrom(`<div data-d="contents" title="穿透容器提示"><p>Body text here.</p></div>`));
+	assert.deepEqual(titleSources(segs), ["穿透容器提示"]);
+});
+
+test("巢狀 display:contents：每層容器的 title 各採一次、文件序不亂", () => {
+	const segs = collect(docFrom(
+		`<div data-d="contents" title="外層提示"><span data-d="contents" title="內層提示">Inline text here.</span></div>`,
+	));
+	assert.deepEqual(titleSources(segs), ["外層提示", "內層提示"]);
+});
+
+test("行內子樹裡的 display:contents 容器：採得到且只採一次（補走那條路不得重複產段）", () => {
+	const segs = collect(docFrom(
+		`<p>Head <span><em data-d="contents" title="行內穿透提示">mid</em></span> tail.</p>`,
+	));
+	assert.deepEqual(titleSources(segs), ["行內穿透提示"]);
+});
+
 // ---------------------------------------------------------------------------
 // 宿主資格：不該採的那些
 // ---------------------------------------------------------------------------

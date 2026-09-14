@@ -64,6 +64,8 @@ const ATTRIBUTE_TARGETS = new Map([
  *
  * 宿主資格另有一條（見 collectAttributes 的 `walked`）：**被走訪到的元素**恆可採——它已過
  * classifyNode 的全部自身閘（隱藏／`translate="no"`／`display:none`／自身 lang 已達標）。
+ * 「被走訪到」含被攤平的 `display:contents` 容器：它本身不會被 yield 給採集迴圈，改由
+ * effectiveChildren 在攤平當下採一次（見該函式）。
  * 因標籤黑名單整棵跳過的元素只有上表那三個宿主可採；`<script>`／`<head>`／`<meta>` 的 tooltip
  * 根本不顯示，`<svg>`／`<pre>` 這類「整棵視為不可採內容」的 tooltip 留作日後的擴充點。
  */
@@ -1135,6 +1137,14 @@ function collectSegments(root, ctx, opts = {}) {
 		for (const child of childNodes(node)) {
 			const label = labelOf(child);
 			if (label.transparent) {
+				// §3.9 攤平點是透明元素在整條走訪裡**唯一一次**露面的地方——它自己從不被 yield，
+				// 呼叫端那條「走訪到的元素採自身 title」因此永遠看不到它。無盒元素的 tooltip 照樣
+				// 顯示，少了這裡，`display:contents` 容器上的 `title` 是永遠採不到、也不會自癒的漏譯。
+				// `walked` 成立：`transparent` 只在 `disp === "WALK"` 時為真（見 visit 與
+				// classifyLabel），自身閘早已過。採自身一次即止，子代由下面的遞迴各自處理。
+				if (hasOwnTitle(/** @type {Element} */ (child))) {
+					collectAttributes(child, { walked: true });
+				}
 				yield* effectiveChildren(child);
 				continue;
 			}
@@ -1232,7 +1242,8 @@ function collectSegments(root, ctx, opts = {}) {
 			}
 			// 走訪到的元素：採它自身的 `title`（全域屬性，任何標籤都可能掛）。放在所有分支之前、
 			// 每顆子元素恰好一次——底下三條路各自只處理子孫（遞迴 collect／collectAttributesWithin
-			// 都從子節點起算），不會重複採同一顆。
+			// 都從子節點起算），不會重複採同一顆。被攤平的 `display:contents` 容器不會走到這裡，
+			// 它在 effectiveChildren 的攤平點各採一次（那是它唯一露面的地方）。
 			// 熱路徑：`hasAttribute` 這一道守衛寫在呼叫端，讓沒有 `title` 的絕大多數元素連函式
 			// 呼叫都省掉（collectAttributes 內仍自己再檢一次，不依賴呼叫端）。
 			if (child.nodeType === NODE_ELEMENT && hasOwnTitle(/** @type {Element} */ (child))) {

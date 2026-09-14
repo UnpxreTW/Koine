@@ -108,3 +108,16 @@ test("§4.8 isFilenameOnly：單 token + 白名單副檔名", () => {
 	assert.equal(koine.isFilenameOnly(".gitignore"), false, "點在開頭不算副檔名");
 	assert.equal(koine.isFilenameOnly("notes."), false, "點在結尾不算副檔名");
 });
+
+test("§4.8 isFilenameOnly：開頭點與副檔名大小寫兩支邊界", () => {
+	// 上一個 test 的 ".gitignore" 與 "notes." 兩條屬等價變異——前者的 "gitignore" 不在白名單、
+	// 後者截出空字串，兩條路徑都落回 KNOWN_EXT.has(...)=false，無法區分守門分支是否存在。
+	// 本 test 補兩個會區分的輸入：
+	// ① 開頭點＋白名單副檔名（dot===0）：守門式為 `dot <= 0`，改成 `dot < 0` 時 ".md" 會被
+	//    當成副檔名 md 而回 true，故此條釘住 dot===0 這一支。
+	assert.equal(koine.isFilenameOnly(".md"), false, "開頭點即使後綴是白名單副檔名也不算檔名");
+	assert.equal(koine.isFilenameOnly(".js"), false);
+	// ② 副檔名大小寫折疊：白名單只存小寫，實作先 toLowerCase 再查；去掉折疊時大寫副檔名會落空。
+	assert.equal(koine.isFilenameOnly("IMG.PNG"), true, "副檔名比對前折成小寫");
+	assert.equal(koine.isFilenameOnly("report.PDF"), true);
+});

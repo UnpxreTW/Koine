@@ -1243,7 +1243,7 @@ function collectSegments(root, ctx, opts = {}) {
 			// 走訪到的元素：採它自身的 `title`（全域屬性，任何標籤都可能掛）。放在所有分支之前、
 			// 每顆子元素恰好一次——底下三條路各自只處理子孫（遞迴 collect／collectAttributesWithin
 			// 都從子節點起算），不會重複採同一顆。被攤平的 `display:contents` 容器不會走到這裡，
-			// 它在 effectiveChildren 的攤平點各採一次（那是它唯一露面的地方）。
+			// 它在 effectiveChildren 的攤平點採一次（那是它唯一露面的地方）。
 			// 熱路徑：`hasAttribute` 這一道守衛寫在呼叫端，讓沒有 `title` 的絕大多數元素連函式
 			// 呼叫都省掉（collectAttributes 內仍自己再檢一次，不依賴呼叫端）。
 			if (child.nodeType === NODE_ELEMENT && hasOwnTitle(/** @type {Element} */ (child))) {
@@ -1270,11 +1270,14 @@ function collectSegments(root, ctx, opts = {}) {
 	}
 
 	/**
-	 * §3.9 屬性文字採集：對「因標籤黑名單而整棵跳過」的元素補收其可見屬性，逐屬性各成一段。
+	 * §3.9 屬性文字採集：收元素身上的可見屬性文字，逐屬性各成一段。兩種來源——① 因標籤黑名單
+	 * 而整棵跳過的元素（`ATTRIBUTE_TARGETS` 表內三個宿主）的表列屬性；② 走訪到的元素自身的全域
+	 * `title`（呼叫端帶 `walked` 表明，見 GLOBAL_ATTRIBUTE_TARGET）。
 	 *
 	 * 屬性段與段落的切分完全正交——不進 buffer、不觸發 flush，也就不影響任何既有段的邊界；
 	 * 它只是把原本零產出的空元素（`<img>`／`<input>`）第一次變成採集對象。
-	 * @param {Node} node  走訪中被標成 SKIP_SUBTREE 的子節點
+	 * @param {Node} node  走訪中的子節點：被標成 SKIP_SUBTREE 者，或帶 `walked` 的走訪到元素
+	 * @param {{ walked?: boolean }} [opts]  walked＝該元素已過 classifyNode 的自身閘，只補檢 [8] 自身 lang
 	 */
 	function collectAttributes(node, opts = {}) {
 		if (node.nodeType !== NODE_ELEMENT) return;
@@ -1355,6 +1358,7 @@ function collectSegments(root, ctx, opts = {}) {
 	 * §3.9 行內子樹裡的屬性宿主。走法與 collect 的分支語義一致：SKIP_SUBTREE 的元素交給
 	 * collectAttributes（白名單與剪枝訊號由它自己判，非白名單者連帶不下探——`<span hidden><img>`
 	 * 因此整棵擋住）、OPAQUE_INLINE 不下探（`<code>`／`<time>` 是不可分割原子）、其餘續往下走。
+	 * 走訪到的元素（含 OPAQUE_INLINE 自身）的全域 `title` 一律交給 collectAttributes 帶 `walked` 採。
 	 * @param {Node} node
 	 */
 	function collectAttributesWithin(node) {

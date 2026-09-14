@@ -103,6 +103,7 @@ const PLACEHOLDER_INPUT_TYPES = new Set([
 /**
  * §3.9 屬性適用性：白名單過了標籤層，這裡再過 `<input type>` 那一層。
  * 非 INPUT 的組合（`<img alt>`／`<area alt>`／`<textarea placeholder>`）恆成立。
+ * 全域屬性（`title`）不受 `<input type>` 那層收窄，在最前面提前 return。
  * @param {Element} el
  * @param {string} attr
  * @returns {boolean}
@@ -1708,7 +1709,7 @@ function remapSpansToSource(spans, map) {
  * wrapper 帶 `data-koine-id` + `koine-translated` class——再次採集時 classifyNode [1]
  * 先擋自家標記、整棵跳過，故插回不會被自己重採（§7.1 (c) 自吞防護）。
  * 只新增 sibling、不改動原文節點的內容（§7.1 (b)）。唯一會碰到原文節點的是**清除**：該節點
- * 上一輪若走過原地換字、這一輪退回並列插回，插 wrapper 前會把原地換字軸留下的三個標記清掉
+ * 上一輪若走過原地換字、這一輪退回並列插回，插 wrapper 前會把原地換字軸留下的兩個標記清掉
  * （見下方 after-segment 分支），否則沒有任何路徑會再刷新它們。
  *
  * §9.2 例外：`anchor.insertMode === "replace"` 的段改走**原地換字**——不建 wrapper，直接覆寫

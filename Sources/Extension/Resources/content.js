@@ -40,6 +40,86 @@ const SKIP_SUBTREE_TAGS = new Set([
 const OPAQUE_INLINE_TAGS = new Set(["CODE", "TIME"]);
 
 /**
+ * §3.9 ATTRIBUTE_TARGETS — 帶「使用者讀得到的文字」的屬性白名單（標籤 → 屬性名）。
+ *
+ * 這三個標籤都在 SKIP_SUBTREE_TAGS 裡：它們沒有可採集的子文字（`<img>`／`<input>` 是空元素、
+ * `<textarea>` 的內容是使用者輸入不能翻），但屬性上掛的字**是**頁面上讀得到的介面文字——圖片
+ * 讀不出來時的替代說明、輸入框的提示、按鈕面板上的字。整頁翻完後這批字仍是原文，是可見的漏譯。
+ *
+ * `<area alt>` 刻意不收：規範的 UA 樣式表給 `area { display: none }`，真瀏覽器裡它一律被
+ * `classifyNode` [9] 擋掉，收了也只會是永遠走不到的碼。
+ *
+ * 白名單依標籤收窄、不是「見到屬性就收」：同一個 `value` 在 `<input type="text">` 上是使用者
+ * 資料（翻了就是竄改表單內容），只有按鈕型 input 的 `value` 才可能是面板文字。按鈕型裡 `submit`
+ * 還要再扣掉一種——它按下去會把自己的 `(name, value)` 一起送出，見 attributeApplies。
+ */
+const ATTRIBUTE_TARGETS = new Map([
+	["IMG", ["alt"]],
+	["TEXTAREA", ["placeholder"]],
+	["INPUT", ["alt", "placeholder", "value"]],
+]);
+
+/** §3.9 `value` 是面板文字（而非使用者資料）的 input 型別。 */
+const VALUE_AS_LABEL_INPUT_TYPES = new Set(["button", "submit", "reset"]);
+
+/**
+ * §3.9 這顆 `<input>` 的 `value` 會不會跟著表單送出。
+ *
+ * `button`／`reset` 從不參與送出、`image` 送的是 `name.x`／`name.y`（值不進去），只有 `submit`
+ * 會把自己的 `(name, value)` 附進 form data set——前提是它有非空的 `name`（規範建構 entry list
+ * 時，`name` 缺席或為空字串的欄位一律跳過）。這種按鈕的 `value` 同時是面板文字**和**送給伺服端
+ * 的指令值（`<input type="submit" name="commit" value="Save">` 是常見框架的預設輸出），覆寫它
+ * 等於改掉送出的資料：伺服端依 value 分派的分支會失配，前端以 `btn.value === "Show"` 判狀態的
+ * 碼也一起失效。⇒ 這種按鈕整顆不採，寧可漏譯一顆按鈕，不竄改使用者送出的內容。
+ * @param {Element} el
+ * @param {string} type 已正規化的 `type` 值
+ * @returns {boolean}
+ */
+function valueIsSubmittedWithForm(el, type) {
+	return type === "submit" && (el.getAttribute("name") || "") !== "";
+}
+/** §3.9 `placeholder` 有意義的 input 型別（白名單、不是黑名單：新型別預設不收）。 */
+const PLACEHOLDER_INPUT_TYPES = new Set([
+	"text", "search", "url", "tel", "email", "password", "number",
+]);
+
+/**
+ * §3.9 屬性適用性：白名單過了標籤層，這裡再過 `<input type>` 那一層。
+ * 非 INPUT 的組合（`<img alt>`／`<area alt>`／`<textarea placeholder>`）恆成立。
+ * @param {Element} el
+ * @param {string} attr
+ * @returns {boolean}
+ */
+function attributeApplies(el, attr) {
+	if (el.tagName !== "INPUT") return true;
+	// 缺 type 的 `<input>` 依規範等同 type="text"。
+	const type = (el.getAttribute("type") || "text").toLowerCase().trim();
+	if (attr === "alt") return type === "image";                          // 圖片按鈕的替代文字
+	// 按鈕面板文字，但扣掉會把 value 一起送出的具名 submit（見 valueIsSubmittedWithForm）。
+	if (attr === "value") {
+		return VALUE_AS_LABEL_INPUT_TYPES.has(type) && !valueIsSubmittedWithForm(el, type);
+	}
+	if (attr === "placeholder") return PLACEHOLDER_INPUT_TYPES.has(type);
+	return false;
+}
+
+/** §3.9 屬性軸的原文備份屬性名（每屬性一份，供還原路徑逐字讀回）。 */
+function attributeOriginalMark(attr) {
+	return "data-koine-original-" + attr;
+}
+
+/**
+ * §3.9 屬性軸的防自吞標記屬性名。值＝上一輪寫進去的譯文逐字副本，語義與段落軸的
+ * `data-koine-translated` 同一條，只是逐屬性各一份。
+ *
+ * ⚠ 名字刻意帶屬性後綴：classifyNode [1] 讀的是 `data-koine-translated` 這個**完整**屬性名，
+ * 後綴形不會誤觸那道整棵剪枝閘（屬性有原文沒翻不該讓整棵子樹跳過）。
+ */
+function attributeTranslatedMark(attr) {
+	return "data-koine-translated-" + attr;
+}
+
+/**
  * §3.5 BULK_TRANSLATE_NO_TAGS — translate="no" 在**整站級**容器視為框架誤標、降級不尊重。
  * 只收 BODY：`MAIN` / `ARTICLE` / `SECTION` 上的標記一律尊重——站台意圖優先於救誤標，
  * 代價（整站誤標若標在 MAIN／ARTICLE 上會整段不翻）已知並接受。
@@ -182,10 +262,12 @@ const KNOWN_EXT = new Set([
 
 /**
  * @param {string} raw
- * @param {{ pageLangIsZh?: boolean }} [opts]
+ * @param {{ pageLangIsZh?: boolean, unit?: TranslationUnit }} [opts]
+ *   `unit` 預設 `"segment"`；只有 R11 極短門檻看它，其餘九條規則對所有單位一律照套。
  * @returns {WorthResult}
  */
 function worthTranslating(raw, opts = {}) {
+	const unit = opts.unit || "segment";
 	// R0 NFC + trim（僅供判斷、不改 source）；顯式去 ZWSP / soft-hyphen。
 	const t = raw.normalize("NFC").replace(/[​­]/gu, "").trim();
 
@@ -208,7 +290,13 @@ function worthTranslating(raw, opts = {}) {
 	}
 
 	// R11 min-length：非漢字段，任何 \p{L} 字母數 < 2 才跳（非僅拉丁）。
-	if (!RE_HAS_HAN.test(t)) {
+	//
+	// **只對段落單位生效**：這條的前提是「一整段話至少要有兩個字母才值得送翻」，而屬性單位天生
+	// 就是短字串——`alt="OK"`／`value="OK"` 是完整、使用者讀得到、且需要翻譯的文字，套上段落的
+	// 極短門檻會把整批屬性判掉。其餘九條（空白／emoji／純符號／純數字／email／URL／路徑／檔名／
+	// already-target）不分單位照套，故判準仍是這一支函式、沒有第二套（見 hasAttrSkipSignal 的
+	// 註解：兩處各寫一份就是讓它們漂開的路）。
+	if (unit === "segment" && !RE_HAS_HAN.test(t)) {
 		let letters = 0;
 		for (const c of t) if (RE_HAS_LETTER.test(c)) letters++;
 		if (letters < 2) return { worth: false, reason: "min-length" };
@@ -814,7 +902,13 @@ const SegmentState = Object.freeze({
 /**
  * §9.2 插回模式——譯文怎麼進 DOM。**replace 的唯一擴充點**，兩條觸發軸共用同一條 render 分支：
  * ①段的種類（§P4 button-class）②語言對（簡中→繁中）。詳見 collectSegments 的 decideInsertMode。
- * @typedef {'after-segment'|'replace'} InsertMode
+ * @typedef {'after-segment'|'replace'|'replace-attr'} InsertMode
+ */
+
+/**
+ * 採集單位——同一條管線上三種粒度的文字來源，差別只在 `worthTranslating` 的極短門檻與插回分支。
+ * 目前實作 `segment`（inline 合併後的整段）與 `attribute`（元素上的可見文字屬性）。
+ * @typedef {'segment'|'attribute'} TranslationUnit
  */
 
 /**
@@ -825,10 +919,12 @@ const SegmentState = Object.freeze({
  * @property {string} source
  * @property {object} anchor
  * @property {string} state
- * @property {'block'|'button'} [kind]   // §P4：button-class 窄判準命中時 = "button"（段的種類分類；
+ * @property {'block'|'button'|'attribute'} [kind]   // §P4：button-class 窄判準命中時 = "button"、
+ *                                       // 屬性文字段 = "attribute"（皆為「段的種類」分類；
  *                                       // 插回行為看 anchor.insertMode、不看本欄）
  * @property {{ protectedSpans?: ProtectedSpan[], skipReason?: string, charCount?: number, replaceSnapshot?: string }} [meta]
- *   replaceSnapshot：insertMode = "replace" 的段專用，採集當下未過濾的原始 textContent（供插回時字面防呆比對）
+ *   replaceSnapshot：原地換字的段專用，採集當下的逐字副本（供插回時字面防呆比對）——
+ *   insertMode = "replace" 存未過濾的原始 textContent、"replace-attr" 存屬性原值
  */
 
 // ============================================================================
@@ -1120,18 +1216,101 @@ function collectSegments(root, ctx, opts = {}) {
 		for (const [child, label] of effectiveChildren(node)) {
 			if (child.nodeType === NODE_COMMENT || child.nodeType === NODE_PI) continue; // G5
 			const { disp, isBlock } = label;
-			if (disp === "SKIP_SUBTREE") continue; // 不切段：跳過不可見/無關子樹，buffer 續接
+			if (disp === "SKIP_SUBTREE") {
+				// 標籤黑名單（`<img>`／`<input>`／`<textarea>`／`<area>`）擋下的元素仍可能帶使用者
+				// 讀得到的屬性文字；其餘 skip 訊號（自家標記／hidden／translate="no"／display:none／
+				// 自身 lang 已是目標語）由 collectAttributes 自己補檢，見該函式。
+				collectAttributes(child);
+				continue; // 不切段：跳過不可見/無關子樹，buffer 續接
+			}
 			if (child.nodeType === NODE_ELEMENT && /** @type {Element} */ (child).tagName === "BR") {
 				buffer.push(child); // §6.2 BR→\n（extractText 處理）
 				continue;
 			}
 			if (disp === "OPAQUE_INLINE") { buffer.push(child); continue; }
-			if (!isBlock) { buffer.push(child); continue; } // inline / text → 累積
+			// 行內節點整顆推進 buffer、不再遞迴（文字由 extractText 抽），但**屬性宿主可能就藏在
+			// 這顆行內節點底下**——`<p><a><img alt="…"></a> …</p>` 是真實頁面最常見的圖片擺法。
+			// 這條補走行內子樹的屬性；文字面的行為一個字都沒改。
+			if (!isBlock) {
+				if (child.nodeType === NODE_ELEMENT) collectAttributesWithin(child);
+				buffer.push(child);
+				continue; // inline / text → 累積
+			}
 			// block → 先 flush 既有 buffer，再遞迴
 			flushHere();
 			collect(child);
 		}
 		flushHere();
+	}
+
+	/**
+	 * §3.9 屬性文字採集：對「因標籤黑名單而整棵跳過」的元素補收其可見屬性，逐屬性各成一段。
+	 *
+	 * 屬性段與段落的切分完全正交——不進 buffer、不觸發 flush，也就不影響任何既有段的邊界；
+	 * 它只是把原本零產出的空元素（`<img>`／`<input>`）第一次變成採集對象。
+	 * @param {Node} node  走訪中被標成 SKIP_SUBTREE 的子節點
+	 */
+	function collectAttributes(node) {
+		if (node.nodeType !== NODE_ELEMENT) return;
+		const el = /** @type {Element} */ (node);
+		const attrs = ATTRIBUTE_TARGETS.get(el.tagName);
+		if (!attrs) return;
+		// 這批標籤在 classifyNode [2] 的標籤黑名單就返回了，[1]／[5]／[6]／[8]／[9] 五道**自身**
+		// 訊號對它們從未評估過——一律在此補齊，判準直接借既有函式、不另寫一份（`<img hidden alt>`、
+		// `<input translate="no" placeholder>`、`display:none` 的輸入框都該一個字都不採）。
+		// 祖先方向的剪枝則是免費的：祖先落 SKIP_SUBTREE 時 collect 根本不會遞迴進來。
+		if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) return;
+		if (opaqueSelfSkips(el, ctx)) return;                 // [5] 屬性訊號 + [6] translate="no" + [9] style
+		if (isAlreadyTargetLang(el, ctx.targetLang)) return;  // [8] 自身 lang 已是目標語
+		for (const attr of attrs) {
+			if (!attributeApplies(el, attr)) continue;
+			const raw = el.getAttribute(attr);
+			if (raw == null) continue;
+			// 逐屬性防自吞：標記值＝上一輪寫進去的譯文逐字副本，與現值全等＝我方譯文還在原位、
+			// 這個屬性這一輪不必再採。不等＝站台自己改過（SPA 換文案），當作新內容重新採集。
+			//
+			// 判準用**全等**、不是段落軸那條「仍含」：段落軸要容忍站台在同一顆元素上追加子節點
+			// （計數 badge、icon）而譯文仍在原位，屬性值沒有子節點這回事，改了就是整個被換掉。
+			// 殘留的兩個 data 屬性一律留到插回期才處理（§8 讀寫分離：採集期不寫 DOM）——
+			// 新值仍走屬性軸就被整批蓋掉，是這條路上唯一的結局。
+			if (el.getAttribute(attributeTranslatedMark(attr)) === raw) continue;
+			const source = normalizeSource(raw);
+			if (source === "") continue;
+			const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "attribute" });
+			const id = makeId(walkId, order);
+			const region = regionOfBlock(el);
+			// anchor.block 是 Element ⇒ observeSegments 的 observe 與 defaultMeasure 的 rect 量測
+			// 天生可用，屬性軸不需要另開一條排程路徑。refNode 只有並列插回會讀。
+			const anchor = { block: el, insertMode: "replace-attr", attr, refNode: null };
+			if (!wt.worth) {
+				segments.push({
+					id, order, region, source, kind: "attribute", anchor,
+					state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
+				});
+				order++;
+				continue;
+			}
+			segments.push({
+				id, order, region, source, kind: "attribute", anchor,
+				state: SegmentState.PENDING, meta: { replaceSnapshot: raw },
+			});
+			order++;
+		}
+	}
+
+	/**
+	 * §3.9 行內子樹裡的屬性宿主。走法與 collect 的分支語義一致：SKIP_SUBTREE 的元素交給
+	 * collectAttributes（白名單與剪枝訊號由它自己判，非白名單者連帶不下探——`<span hidden><img>`
+	 * 因此整棵擋住）、OPAQUE_INLINE 不下探（`<code>`／`<time>` 是不可分割原子）、其餘續往下走。
+	 * @param {Node} node
+	 */
+	function collectAttributesWithin(node) {
+		for (const [child, label] of effectiveChildren(node)) {
+			if (child.nodeType !== NODE_ELEMENT) continue;
+			if (label.disp === "SKIP_SUBTREE") { collectAttributes(child); continue; }
+			if (label.disp === "OPAQUE_INLINE") continue;
+			collectAttributesWithin(child);
+		}
 	}
 
 	function makeSegmentFromBuffer(buf, blockNode) {
@@ -1512,6 +1691,27 @@ function insertTranslations(segments, opts = {}) {
 		}
 		const block = seg.anchor && seg.anchor.block;
 		if (!block) continue;
+
+		// §3.9 replace-attr：屬性文字原地覆寫。元素結構一個都不動、不加 wrapper——屬性沒有子節點
+		// 可破壞，故不需要段落軸那道 hasOnlyTextChildren 結構閘，其餘 drift 紀律完全相同。
+		if (seg.anchor.insertMode === "replace-attr") {
+			const attr = seg.anchor.attr;
+			if (typeof attr !== "string" || attr === "") continue;
+			if (typeof block.setAttribute !== "function" || typeof block.getAttribute !== "function") continue;
+			// 防呆：採集與插回之間是非同步的，屬性值可能已被站台自身 JS 換掉（表單重置、SPA 換文案）。
+			// 拿「插回當下」的屬性值對比採集當下存的逐字快照，不符＝譯文對不上目前狀態，放棄本次
+			// 覆寫、不留任何標記，下一輪採集會依當下的值重新產生待譯段。缺快照（防禦路徑、呼叫端
+			// 手搭 segment）一律視為不可信、放棄覆寫。
+			const attrSnapshot = seg.meta && typeof seg.meta.replaceSnapshot === "string" ? seg.meta.replaceSnapshot : null;
+			if (attrSnapshot === null || block.getAttribute(attr) !== attrSnapshot) continue;
+			// 原文逐字備份在先：中途若 setAttribute 丟例外，頁面上至少留得住還原所需的原值。
+			block.setAttribute(attributeOriginalMark(attr), attrSnapshot);
+			block.setAttribute(attr, text);
+			// 防自吞標記寫在最後，值＝剛寫進去的譯文逐字副本（見 collectAttributes 的比對）。
+			block.setAttribute(attributeTranslatedMark(attr), text);
+			inserted.push(block);
+			continue;
+		}
 
 		// §9.2 replace：原地換字，不加 wrapper（§P4 KO-5/6/7 與簡→繁共用本分支）。
 		if ((seg.anchor.insertMode || "after-segment") === "replace") {
@@ -1934,11 +2134,12 @@ if (typeof document !== "undefined" && typeof browser !== "undefined") {
 // ============================================================================
 
 const __koineExports = {
-	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, SegmentState,
+	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, ATTRIBUTE_TARGETS, SegmentState,
 	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS, DEFAULT_TARGET_LANG,
 	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
 	classifyZhVariant, isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
 	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,
+	attributeApplies, attributeOriginalMark, attributeTranslatedMark,
 	REPLACE_TITLE_MAX_CHARS,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,

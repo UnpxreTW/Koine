@@ -311,19 +311,35 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 // 結構安全前提：兩軸共用
 // ---------------------------------------------------------------------------
 
-test("結構安全前提：簡中段含元素子代 → 退回 after-segment，原文結構原封不動", () => {
-	// 原地換字用 textContent 整個覆寫，會連帶砍掉 <strong>／<a>／icon 等元素子代且無法還原。
-	const doc = docFrom(`<div lang="zh-CN"><p id="p">简体<strong id="s">加粗</strong>段落。</p></div>`);
+test("結構安全前提：①軸（button）含元素子代 → 退回 after-segment，原文結構原封不動", () => {
+	// 原地換字用 textContent 整個覆寫，會連帶砍掉 icon 等元素子代且無法還原。①軸的窄判準
+	// 因此要求只有純文字子代；②軸不再退回並列（改走碎片軸，見 fragment-replace.test.mjs）。
+	const doc = docFrom(`<button id="b">送出<span id="i">→</span></button>`);
 	const segs = collectWith(doc);
 	assert.equal(segs.length, 1);
 	assert.equal(segs[0].anchor.insertMode, "after-segment", "含元素子代不得就地取代");
+	assert.notEqual(segs[0].kind, "button", "沒過窄判準就不是 button 段");
 
 	draftPending(segs);
 	koine.insertTranslations(segs);
-	assert.ok(doc.getElementById("s"), "原文的 <strong> 應原封不動保留");
+	assert.ok(doc.getElementById("i"), "原文的 <span> 應原封不動保留");
 	assert.equal(
 		doc.querySelector(`[data-koine-id="${segs[0].id}"]`).tagName, "DIV",
 		"應改走一般 wrapper 插回",
+	);
+});
+
+test("結構安全前提：②軸有 block 子代 → 退回 after-segment（碎片軸也不收）", () => {
+	// 碎片軸的標記記在 block 上、值是整顆 textContent；有 block 子代時這顆 block 的文字
+	// 分屬多個 buffer，子 block 那段之後被換掉就會讓標記與現值對不上、把已譯的碎片重採。
+	const doc = docFrom(`<div id="d" lang="zh-CN">前言<p id="p">段落内容。</p></div>`);
+	const segs = collectWith(doc);
+	const outer = segs.find((s) => s.anchor.block.id === "d");
+	assert.ok(outer, "外層 div 的裸文字應自成一段");
+	assert.equal(outer.anchor.insertMode, "after-segment", "有 block 子代不得走碎片軸");
+	assert.equal(
+		segs.find((s) => s.anchor.block.id === "p").anchor.insertMode, "replace",
+		"內層 p 只有純文字子代、照舊走整段原地換字",
 	);
 });
 

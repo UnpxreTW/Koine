@@ -143,33 +143,29 @@ test("②軸不得撿走①軸刻意退回的長按鈕（長度閘是按鈕排�
 	assert.equal(segs[0].anchor.insertMode, "after-segment", "②軸不得繞過①軸的長度閘");
 });
 
-test("replace 不覆寫元素既有的 title（站台自己的提示不可被抹掉、且無還原路徑）", () => {
+test("原地換字不碰元素既有的 title：站台的提示改由屬性軸自己翻，原值另存一份", () => {
 	const doc = docFrom(`<div lang="zh-CN"><p id="p" title="站台原有提示">简体段落内容。</p></div>`);
 	const segs = draftPending(collectWith(doc));
 	koine.insertTranslations(segs);
 	const p = doc.getElementById("p");
-	assert.equal(p.getAttribute("title"), "站台原有提示", "既有 title 必須保留");
-	assert.equal(p.getAttribute("data-koine-original"), "简体段落内容。", "原文仍存 data 屬性");
-	assert.equal(p.textContent, segs[0].draft, "換字本身照做");
+	const body = segs.find((x) => x.anchor.insertMode === "replace");
+	assert.equal(p.getAttribute("title"), "譯‹站台原有提示›", "title 自成一段、應換成譯文");
+	assert.equal(p.getAttribute("data-koine-original-title"), "站台原有提示", "屬性軸應留原值");
+	assert.equal(p.getAttribute("data-koine-original"), "简体段落内容。", "內文原文仍存 data 屬性");
+	assert.equal(p.textContent, body.draft, "換字本身照做");
 });
 
-test("過長的原文不寫進 title（整段 tooltip 會被輔助技術當可及描述唸出）", () => {
+test("原文一律不寫進 title：長短都一樣（tooltip 現在只承載譯文）", () => {
 	const long = "这是一段很长的简体中文段落内容用来测试标题属性的长度上限行为是否正确。";
-	assert.ok(long.length > koine.REPLACE_TITLE_MAX_CHARS, "前提：測試字串需超過上限");
-	const doc = docFrom(`<div lang="zh-CN"><p id="p">${long}</p></div>`);
-	const segs = draftPending(collectWith(doc));
-	koine.insertTranslations(segs);
-	const p = doc.getElementById("p");
-	assert.ok(!p.hasAttribute("title"), "超過上限不寫 title");
-	assert.equal(p.getAttribute("data-koine-original"), long, "原文仍完整存在 data 屬性");
-	assert.equal(p.textContent, segs[0].draft);
-});
-
-test("短原文仍寫 title（按鈕軸的既有行為不因新規則改變）", () => {
-	const doc = docFrom(`<div lang="zh-CN"><p id="p">简体短句。</p></div>`);
-	const segs = draftPending(collectWith(doc));
-	koine.insertTranslations(segs);
-	assert.equal(doc.getElementById("p").getAttribute("title"), "简体短句。");
+	for (const source of [long, "简体短句。"]) {
+		const doc = docFrom(`<div lang="zh-CN"><p id="p">${source}</p></div>`);
+		const segs = draftPending(collectWith(doc));
+		koine.insertTranslations(segs);
+		const p = doc.getElementById("p");
+		assert.ok(!p.hasAttribute("title"), `原文（${source.length} 字）不得寫進 title`);
+		assert.equal(p.getAttribute("data-koine-original"), source, "原文仍完整存在 data 屬性");
+		assert.equal(p.textContent, segs[0].draft);
+	}
 });
 
 test('lang="" ＝語言未知、不繼承祖先（HTML 規範）：簡中頁內的空 lang 區塊不得就地取代', () => {
@@ -201,18 +197,18 @@ test('lang="" 在兩條語言查詢路徑上答案一致（下行增量 vs close
 	assert.equal(koine.isSimplifiedChinese(""), false, '"" 不是簡中語碼');
 });
 
-test("縮排排版的按鈕仍寫 title：長度閘比的是 normalize 後的 source、不是原始 textContent", () => {
-	// 多行排版是真實 HTML 的主流寫法。窄判準卡的是 source.length（normalize 後），若 title
-	// 閘改比 snapshot.length（含縮排）就會兩邊比錯，同一顆按鈕寫一行有 title、寫三行沒有。
+test("縮排排版的按鈕：data-koine-original 存逐字快照（連縮排一起留，還原用）", () => {
+	// 多行排版是真實 HTML 的主流寫法：source 是 normalize 後的展示字串，還原要的是原始快照，
+	// 兩者在這種排版下必然不同——存錯邊就還原不回原本的空白。
 	const doc = docFrom(`<button id="b">\n          确认提交\n        </button>`);
 	const segs = collectWith(doc);
 	assert.equal(segs[0].source, "确认提交");
-	assert.ok(segs[0].meta.replaceSnapshot.length > koine.REPLACE_TITLE_MAX_CHARS, "前提：原始快照含縮排、超過上限");
+	assert.notEqual(segs[0].meta.replaceSnapshot, segs[0].source, "前提：原始快照含縮排、與 source 不同");
 
 	draftPending(segs);
 	koine.insertTranslations(segs);
 	const b = doc.getElementById("b");
-	assert.equal(b.getAttribute("title"), "确认提交", "title 應為 normalize 後的原文、不帶縮排");
+	assert.ok(!b.hasAttribute("title"), "原文不再寫進 tooltip");
 	assert.equal(
 		b.getAttribute("data-koine-original"), segs[0].meta.replaceSnapshot,
 		"data-koine-original 仍存逐字快照（還原用、連空白一起留）",
@@ -315,19 +311,35 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 // 結構安全前提：兩軸共用
 // ---------------------------------------------------------------------------
 
-test("結構安全前提：簡中段含元素子代 → 退回 after-segment，原文結構原封不動", () => {
-	// 原地換字用 textContent 整個覆寫，會連帶砍掉 <strong>／<a>／icon 等元素子代且無法還原。
-	const doc = docFrom(`<div lang="zh-CN"><p id="p">简体<strong id="s">加粗</strong>段落。</p></div>`);
+test("結構安全前提：①軸（button）含元素子代 → 退回 after-segment，原文結構原封不動", () => {
+	// 原地換字用 textContent 整個覆寫，會連帶砍掉 icon 等元素子代且無法還原。①軸的窄判準
+	// 因此要求只有純文字子代；②軸不再退回並列（改走碎片軸，見 fragment-replace.test.mjs）。
+	const doc = docFrom(`<button id="b">送出<span id="i">→</span></button>`);
 	const segs = collectWith(doc);
 	assert.equal(segs.length, 1);
 	assert.equal(segs[0].anchor.insertMode, "after-segment", "含元素子代不得就地取代");
+	assert.notEqual(segs[0].kind, "button", "沒過窄判準就不是 button 段");
 
 	draftPending(segs);
 	koine.insertTranslations(segs);
-	assert.ok(doc.getElementById("s"), "原文的 <strong> 應原封不動保留");
+	assert.ok(doc.getElementById("i"), "原文的 <span> 應原封不動保留");
 	assert.equal(
 		doc.querySelector(`[data-koine-id="${segs[0].id}"]`).tagName, "DIV",
 		"應改走一般 wrapper 插回",
+	);
+});
+
+test("結構安全前提：②軸有 block 子代 → 退回 after-segment（碎片軸也不收）", () => {
+	// 碎片軸的標記記在 block 上、值是整顆 textContent；有 block 子代時這顆 block 的文字
+	// 分屬多個 buffer，子 block 那段之後被換掉就會讓標記與現值對不上、把已譯的碎片重採。
+	const doc = docFrom(`<div id="d" lang="zh-CN">前言<p id="p">段落内容。</p></div>`);
+	const segs = collectWith(doc);
+	const outer = segs.find((s) => s.anchor.block.id === "d");
+	assert.ok(outer, "外層 div 的裸文字應自成一段");
+	assert.equal(outer.anchor.insertMode, "after-segment", "有 block 子代不得走碎片軸");
+	assert.equal(
+		segs.find((s) => s.anchor.block.id === "p").anchor.insertMode, "replace",
+		"內層 p 只有純文字子代、照舊走整段原地換字",
 	);
 });
 
@@ -344,7 +356,7 @@ test("render 分派只看 anchor.insertMode：簡中段原地換字、行為與 
 	assert.equal(inserted.length, 1);
 	assertSame(inserted[0], p, "replace 應回傳原元素本身、非新建 wrapper");
 	assert.equal(p.textContent, segs[0].draft, "textContent 應換成譯文");
-	assert.equal(p.getAttribute("title"), "这是简体中文段落。", "原文應存 title");
+	assert.ok(!p.hasAttribute("title"), "原文不得寫進 title");
 	assert.equal(p.getAttribute("data-koine-original"), "这是简体中文段落。", "原文應存 data-koine-original");
 	assert.ok(p.hasAttribute("data-koine-translated"), "缺防自吞標記");
 	assert.equal(doc.querySelectorAll(".koine-translated").length, 0, "replace 不應建 wrapper");

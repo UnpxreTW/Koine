@@ -3,7 +3,7 @@
 //
 // 跑道 A（linkedom）：P4 button-class 元素原地換字特徵化測試。
 // button-class 窄判準（BUTTON／LABEL／role=button + ≤20 字 + 無 block 子）命中時直接原地換字，
-// 原文存 title + data-koine-original，並以 data-koine-translated 防自吞；標記消失（重渲染）
+// 原文存 data-koine-original，並以 data-koine-translated 防自吞；標記消失（重渲染）
 // 即視為未譯、重新採集會產生新段——不加 wrapper。
 
 import { test } from "node:test";
@@ -102,7 +102,7 @@ test("含任何元素子代（icon svg／ruby／aria-hidden／sr-only）的 BUTT
 	}
 });
 
-test("replace 渲染：原地換字＋原文存 title/data-koine-original＋data-koine-translated 標記、不加 wrapper", () => {
+test("replace 渲染：原地換字＋原文存 data-koine-original＋data-koine-translated 標記、不加 wrapper", () => {
 	const doc = docFrom(`<button id="b">送出</button>`);
 	const segs = draftPending(collect(doc));
 	const inserted = koine.insertTranslations(segs);
@@ -111,7 +111,7 @@ test("replace 渲染：原地換字＋原文存 title/data-koine-original＋data
 	assert.equal(inserted.length, 1);
 	assertSame(inserted[0], btn, "button-class 應回傳原元素本身，非新建 wrapper");
 	assert.equal(btn.textContent, segs[0].draft, "textContent 應換成譯文");
-	assert.equal(btn.getAttribute("title"), "送出", "title 應存原文（KO-6）");
+	assert.ok(!btn.hasAttribute("title"), "原文不再寫進 title（tooltip 只承載譯文）");
 	assert.equal(btn.getAttribute("data-koine-original"), "送出", "data-koine-original 應存原文（KO-7）");
 	assert.ok(btn.hasAttribute("data-koine-translated"), "缺 data-koine-translated 防自吞標記（KO-7）");
 	assertSame(btn.nextSibling, null, "button-class 不應插入 wrapper sibling（KO-7 不加 wrapper）");

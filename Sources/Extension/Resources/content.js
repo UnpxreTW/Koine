@@ -59,6 +59,23 @@ const ATTRIBUTE_TARGETS = new Map([
 	["INPUT", ["alt", "placeholder", "value"]],
 ]);
 
+/**
+ * §3.9 `title` 是全域屬性、不掛在任何標籤上，故不進上面那張表。
+ *
+ * 宿主資格另有一條（見 collectAttributes 的 `walked`）：**被走訪到的元素**恆可採——它已過
+ * classifyNode 的全部自身閘（隱藏／`translate="no"`／`display:none`／自身 lang 已達標）。
+ * 「被走訪到」含被攤平的 `display:contents` 容器：它本身不會被 yield 給採集迴圈，改由
+ * effectiveChildren 在攤平當下採一次（見該函式）。
+ * 因標籤黑名單整棵跳過的元素只有上表那三個宿主可採；`<script>`／`<head>`／`<meta>` 的 tooltip
+ * 根本不顯示，`<svg>`／`<pre>` 這類「整棵視為不可採內容」的 tooltip 留作日後的擴充點。
+ */
+const GLOBAL_ATTRIBUTE_TARGET = "title";
+
+/** §3.9 走訪熱路徑上的前置守衛：沒有 `title` 的元素連屬性採集都不必進（見 collect）。 */
+function hasOwnTitle(el) {
+	return typeof el.hasAttribute === "function" && el.hasAttribute(GLOBAL_ATTRIBUTE_TARGET);
+}
+
 /** §3.9 `value` 是面板文字（而非使用者資料）的 input 型別。 */
 const VALUE_AS_LABEL_INPUT_TYPES = new Set(["button", "submit", "reset"]);
 
@@ -86,11 +103,13 @@ const PLACEHOLDER_INPUT_TYPES = new Set([
 /**
  * §3.9 屬性適用性：白名單過了標籤層，這裡再過 `<input type>` 那一層。
  * 非 INPUT 的組合（`<img alt>`／`<area alt>`／`<textarea placeholder>`）恆成立。
+ * 全域屬性（`title`）不受 `<input type>` 那層收窄，在最前面提前 return。
  * @param {Element} el
  * @param {string} attr
  * @returns {boolean}
  */
 function attributeApplies(el, attr) {
+	if (attr === GLOBAL_ATTRIBUTE_TARGET) return true;   // 全域屬性，不受 <input type> 那層收窄
 	if (el.tagName !== "INPUT") return true;
 	// 缺 type 的 `<input>` 依規範等同 type="text"。
 	const type = (el.getAttribute("type") || "text").toLowerCase().trim();
@@ -150,14 +169,6 @@ const NODE_COMMENT = 8;
 
 /** button-class 段的譯文換字上限字數（超過退回一般 block／wrapper 流程）。 */
 const BUTTON_CLASS_MAX_CHARS = 20;
-
-/**
- * §9.2 replace 段把原文寫進 `title` 的長度上限。`title` 是「短標籤的 tooltip」慣例：整段文章
- * 塞進去會變成巨大 tooltip，且 `title` 會被輔助技術當成該元素的可及描述唸出。沿用 button-class
- * 的「短互動文字」門檻、不另立第二套長度標準——超過就只留 `data-koine-original`（純資料、
- * 不影響 hover 與可及名稱）。
- */
-const REPLACE_TITLE_MAX_CHARS = BUTTON_CLASS_MAX_CHARS;
 
 /** @param {Element} el */
 function hasButtonRole(el) {
@@ -902,13 +913,14 @@ const SegmentState = Object.freeze({
 /**
  * §9.2 插回模式——譯文怎麼進 DOM。**replace 的唯一擴充點**，兩條觸發軸共用同一條 render 分支：
  * ①段的種類（§P4 button-class）②語言對（簡中→繁中）。詳見 collectSegments 的 decideInsertMode。
- * @typedef {'after-segment'|'replace'|'replace-attr'} InsertMode
+ * @typedef {'after-segment'|'replace'|'replace-attr'|'replace-text'} InsertMode
  */
 
 /**
  * 採集單位——同一條管線上三種粒度的文字來源，差別只在 `worthTranslating` 的極短門檻與插回分支。
- * 目前實作 `segment`（inline 合併後的整段）與 `attribute`（元素上的可見文字屬性）。
- * @typedef {'segment'|'attribute'} TranslationUnit
+ * 目前實作 `segment`（inline 合併後的整段）、`attribute`（元素上的可見文字屬性）與
+ * `fragment`（簡→繁就地換字時拆出的單顆 text node）。
+ * @typedef {'segment'|'attribute'|'fragment'} TranslationUnit
  */
 
 /**
@@ -919,12 +931,30 @@ const SegmentState = Object.freeze({
  * @property {string} source
  * @property {object} anchor
  * @property {string} state
- * @property {'block'|'button'|'attribute'} [kind]   // §P4：button-class 窄判準命中時 = "button"、
- *                                       // 屬性文字段 = "attribute"（皆為「段的種類」分類；
- *                                       // 插回行為看 anchor.insertMode、不看本欄）
+ * @property {'block'|'button'|'attribute'|'fragment'} [kind]   // §P4：button-class 窄判準命中時 = "button"、
+ *                                       // 屬性文字段 = "attribute"、碎片段 = "fragment"
+ *                                       //（皆為「段的種類」分類；插回行為看 anchor.insertMode、
+ *                                       // 不看本欄）
  * @property {{ protectedSpans?: ProtectedSpan[], skipReason?: string, charCount?: number, replaceSnapshot?: string }} [meta]
  *   replaceSnapshot：原地換字的段專用，採集當下的逐字副本（供插回時字面防呆比對）——
- *   insertMode = "replace" 存未過濾的原始 textContent、"replace-attr" 存屬性原值
+ *   insertMode = "replace" 存未過濾的原始 textContent、"replace-attr" 存屬性原值、
+ *   "replace-text" 存該顆 text node 的 nodeValue
+ */
+
+/**
+ * §9.2 碎片軸的結算單位：同一顆 block 的全部碎片共用一份，採集期（makeFragmentSegments）建立、
+ * 掛在每顆碎片的 `anchor.fragmentGroup` 上，供 `insertTranslations` **跨呼叫**累積。
+ * `total` 是該 block 產出的碎片數（`null` ＝手搭 segment 的退路，退回單次呼叫內結算）。
+ * @typedef {object} FragmentPlan
+ * @property {Element} block
+ * @property {number|null} total
+ * @property {number} arrived   // 已到達 render 的碎片數（寫得成與否都算）
+ * @property {{ textNode: Text, snapshot: string, value: string }[]} writes
+ * @property {{ textNode: Text, snapshot: string }[]} checks  // 不寫 DOM、但一樣要驗 drift 的碎片
+ * @property {string|null} blockSnapshot  // 採集當下整顆 block 的 textContent（`null` ＝手搭退路，見上）
+ * @property {WeakSet<Segment>} [seen]  // 已登記到達的碎片段（計相異碎片數、不計插回次數）
+ * @property {boolean} refused  // 任一顆碎片失效 ⇒ 整顆 block 放棄，且不可回頭
+ * @property {boolean} applied  // 已套用，重複呼叫不再寫第二次
  */
 
 // ============================================================================
@@ -1127,6 +1157,14 @@ function collectSegments(root, ctx, opts = {}) {
 		for (const child of childNodes(node)) {
 			const label = labelOf(child);
 			if (label.transparent) {
+				// §3.9 攤平點是透明元素在整條走訪裡**唯一一次**露面的地方——它自己從不被 yield，
+				// 呼叫端那條「走訪到的元素採自身 title」因此永遠看不到它。無盒元素的 tooltip 照樣
+				// 顯示，少了這裡，`display:contents` 容器上的 `title` 是永遠採不到、也不會自癒的漏譯。
+				// `walked` 成立：`transparent` 只在 `disp === "WALK"` 時為真（見 visit 與
+				// classifyLabel），自身閘早已過。採自身一次即止，子代由下面的遞迴各自處理。
+				if (hasOwnTitle(/** @type {Element} */ (child))) {
+					collectAttributes(child, { walked: true });
+				}
 				yield* effectiveChildren(child);
 				continue;
 			}
@@ -1174,6 +1212,13 @@ function collectSegments(root, ctx, opts = {}) {
 	 * sibling、不動原文，天生安全。①軸的這道閘在 `isButtonClassCandidate` 內（窄判準的一部分），
 	 * ②軸在本函式補上。
 	 *
+	 * ②軸的結構閘**不再是二選一**：帶 inline 子代（`<strong>`／`<a>`／icon）的簡中段改回
+	 * `replace-text`——逐個 text node 各自換字、一個元素節點都不碰，破壞性比整段覆寫更低，
+	 * 故不必退回並列。仍退回並列的是**有 block 子代**的段：那種段的 buffer 只涵蓋它的一部分
+	 * 文字，而防自吞標記記在 block 上、值是整顆元素的 `textContent`（見 insertTranslations），
+	 * 子 block 自己那段之後被換掉就會讓標記與現值對不上、把已譯的碎片重採一輪。
+	 * ①軸不走碎片：按鈕的窄判準本來就要求只有純文字子代，不存在「有 inline 子代的按鈕」這一路。
+	 *
 	 * **兩軸不共用**的是①軸的 `BUTTON_CLASS_MAX_CHARS` 長度閘——那是按鈕排版的約束、不是語言
 	 * 的約束。為免②軸把①軸刻意退回的長按鈕撿走，本函式對所有 button-class 元素直接退回。
 	 * @param {Node} blockNode
@@ -1188,8 +1233,7 @@ function collectSegments(root, ctx, opts = {}) {
 		// ①軸的元素沒通過窄判準＝刻意退回（太長／有 block 子／有元素子代），②軸不得從旁邊撿走
 		// ——否則 21 字的按鈕在簡中頁會繞過 ≤20 字閘，換字照樣撐破按鈕排版。
 		if (isButtonClassElement(el)) return "after-segment";
-		// 文件／頁面根不就地取代：覆寫 <body> 的 textContent、或把整段原文寫成 <body title>
-		// 都不是「段」層級該做的事。
+		// 文件／頁面根不就地取代：覆寫 <body> 的 textContent 不是「段」層級該做的事。
 		if (el.tagName === "BODY" || el.tagName === "HTML") return "after-segment";
 		if (!isTraditionalChineseTarget(ctx.targetLang)) return "after-segment";
 		const label = labels.get(blockNode);
@@ -1203,7 +1247,10 @@ function collectSegments(root, ctx, opts = {}) {
 		if (!RE_HAS_HAN.test(source) || RE_HAS_KANA.test(source) || RE_HAS_HANGUL.test(source)) {
 			return "after-segment";
 		}
-		return hasOnlyTextChildren(el) ? "replace" : "after-segment";
+		if (hasOnlyTextChildren(el)) return "replace";
+		// 碎片軸的適用面比整段軸窄一層：有 block 子代的段退回並列（理由見上方 header）。
+		const hasBlockDescendant = label ? label.hasBlockDescendant : true; // 未知時保守判有
+		return hasBlockDescendant ? "after-segment" : "replace-text";
 	}
 
 	function collect(node) {
@@ -1222,6 +1269,15 @@ function collectSegments(root, ctx, opts = {}) {
 				// 自身 lang 已是目標語）由 collectAttributes 自己補檢，見該函式。
 				collectAttributes(child);
 				continue; // 不切段：跳過不可見/無關子樹，buffer 續接
+			}
+			// 走訪到的元素：採它自身的 `title`（全域屬性，任何標籤都可能掛）。放在所有分支之前、
+			// 每顆子元素恰好一次——底下三條路各自只處理子孫（遞迴 collect／collectAttributesWithin
+			// 都從子節點起算），不會重複採同一顆。被攤平的 `display:contents` 容器不會走到這裡，
+			// 它在 effectiveChildren 的攤平點採一次（那是它唯一露面的地方）。
+			// 熱路徑：`hasAttribute` 這一道守衛寫在呼叫端，讓沒有 `title` 的絕大多數元素連函式
+			// 呼叫都省掉（collectAttributes 內仍自己再檢一次，不依賴呼叫端）。
+			if (child.nodeType === NODE_ELEMENT && hasOwnTitle(/** @type {Element} */ (child))) {
+				collectAttributes(child, { walked: true });
 			}
 			if (child.nodeType === NODE_ELEMENT && /** @type {Element} */ (child).tagName === "BR") {
 				buffer.push(child); // §6.2 BR→\n（extractText 處理）
@@ -1244,70 +1300,104 @@ function collectSegments(root, ctx, opts = {}) {
 	}
 
 	/**
-	 * §3.9 屬性文字採集：對「因標籤黑名單而整棵跳過」的元素補收其可見屬性，逐屬性各成一段。
+	 * §3.9 屬性文字採集：收元素身上的可見屬性文字，逐屬性各成一段。兩種來源——① 因標籤黑名單
+	 * 而整棵跳過的元素（`ATTRIBUTE_TARGETS` 表內三個宿主）的表列屬性；② 走訪到的元素自身的全域
+	 * `title`（呼叫端帶 `walked` 表明，見 GLOBAL_ATTRIBUTE_TARGET）。
 	 *
 	 * 屬性段與段落的切分完全正交——不進 buffer、不觸發 flush，也就不影響任何既有段的邊界；
 	 * 它只是把原本零產出的空元素（`<img>`／`<input>`）第一次變成採集對象。
-	 * @param {Node} node  走訪中被標成 SKIP_SUBTREE 的子節點
+	 * @param {Node} node  走訪中的子節點：被標成 SKIP_SUBTREE 者，或帶 `walked` 的走訪到元素
+	 * @param {{ walked?: boolean }} [opts]  walked＝該元素已過 classifyNode 的自身閘，只補檢 [8] 自身 lang
 	 */
-	function collectAttributes(node) {
+	function collectAttributes(node, opts = {}) {
 		if (node.nodeType !== NODE_ELEMENT) return;
 		const el = /** @type {Element} */ (node);
 		const attrs = ATTRIBUTE_TARGETS.get(el.tagName);
-		if (!attrs) return;
-		// 這批標籤在 classifyNode [2] 的標籤黑名單就返回了，[1]／[5]／[6]／[8]／[9] 五道**自身**
-		// 訊號對它們從未評估過——一律在此補齊，判準直接借既有函式、不另寫一份（`<img hidden alt>`、
-		// `<input translate="no" placeholder>`、`display:none` 的輸入框都該一個字都不採）。
-		// 祖先方向的剪枝則是免費的：祖先落 SKIP_SUBTREE 時 collect 根本不會遞迴進來。
-		if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) return;
-		if (opaqueSelfSkips(el, ctx)) return;                 // [5] 屬性訊號 + [6] translate="no" + [9] style
-		if (isAlreadyTargetLang(el, ctx.targetLang)) return;  // [8] 自身 lang 已是目標語
-		for (const attr of attrs) {
-			if (!attributeApplies(el, attr)) continue;
-			const raw = el.getAttribute(attr);
-			if (raw == null) continue;
-			// 逐屬性防自吞：標記值＝上一輪寫進去的譯文逐字副本，與現值全等＝我方譯文還在原位、
-			// 這個屬性這一輪不必再採。不等＝站台自己改過（SPA 換文案），當作新內容重新採集。
-			//
-			// 判準用**全等**、不是段落軸那條「仍含」：段落軸要容忍站台在同一顆元素上追加子節點
-			// （計數 badge、icon）而譯文仍在原位，屬性值沒有子節點這回事，改了就是整個被換掉。
-			// 殘留的兩個 data 屬性一律留到插回期才處理（§8 讀寫分離：採集期不寫 DOM）——
-			// 新值仍走屬性軸就被整批蓋掉，是這條路上唯一的結局。
-			if (el.getAttribute(attributeTranslatedMark(attr)) === raw) continue;
-			const source = normalizeSource(raw);
-			if (source === "") continue;
-			const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "attribute" });
-			const id = makeId(walkId, order);
-			const region = regionOfBlock(el);
-			// anchor.block 是 Element ⇒ observeSegments 的 observe 與 defaultMeasure 的 rect 量測
-			// 天生可用，屬性軸不需要另開一條排程路徑。refNode 只有並列插回會讀。
-			const anchor = { block: el, insertMode: "replace-attr", attr, refNode: null };
-			if (!wt.worth) {
-				segments.push({
-					id, order, region, source, kind: "attribute", anchor,
-					state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
-				});
-				order++;
-				continue;
-			}
+		// 走訪到的元素才有資格採全域的 `title`（見 GLOBAL_ATTRIBUTE_TARGET）；表格裡那三個宿主
+		// 即使因標籤黑名單整棵跳過也算數——它們是渲染出來的圖片與表單控制項，tooltip 看得到。
+		//
+		// 第三種宿主＝**帶著我方原地換字標記而被整棵跳過的元素**。它是被我方自己的標記擋下的，
+		// 不是被頁面的訊號擋下的：上一輪走訪時它過了全部自身閘、也確實渲染在頁面上。少了這條，
+		// 站台事後在這種元素上新增或改寫 `title`（內文一個字沒動 ⇒ 標記仍命中 ⇒ 恆走 SKIP_SUBTREE）
+		// 就永遠採不到，是一條不會自癒的漏譯。下面的自身訊號補檢照跑，事後才加的 `hidden` 仍擋得住。
+		const takesTitle = el.hasAttribute(GLOBAL_ATTRIBUTE_TARGET)
+			&& (opts.walked === true || !!attrs || el.hasAttribute("data-koine-translated"));
+		// 熱路徑快速退場：頁面上絕大多數元素既不在白名單、也沒有 `title`，到此為止只付一次
+		// Map.get 與一次 hasAttribute（皆不觸發 reflow）。下面的自身訊號補檢因此不會攤到每顆元素。
+		if (!attrs && !takesTitle) return;
+		if (opts.walked === true) {
+			// 走訪到的元素已由 classifyNode 評估過 [1]／[5]／[6]／[9]（過了才會是 WALK／OPAQUE），
+			// 在此重跑只是白付一次 getStyle 與一輪屬性讀取。**唯獨 [8] 要補**：OPAQUE 的 return
+			// 排在 [8] 之前（見 opaqueSelfSkips 的註解），`<code lang="zh-TW" title="…">` 的自身
+			// lang 從未被評估過。
+			if (isAlreadyTargetLang(el, ctx.targetLang)) return;
+		} else {
+			// 這批標籤在 classifyNode [2] 的標籤黑名單就返回了，[1]／[5]／[6]／[8]／[9] 五道**自身**
+			// 訊號對它們從未評估過——一律在此補齊，判準直接借既有函式、不另寫一份（`<img hidden alt>`、
+			// `<input translate="no" placeholder>`、`display:none` 的輸入框都該一個字都不採）。
+			// 祖先方向的剪枝則是免費的：祖先落 SKIP_SUBTREE 時 collect 根本不會遞迴進來。
+			if (el.hasAttribute("data-koine-id") || el.classList.contains("koine-translated")) return;
+			if (opaqueSelfSkips(el, ctx)) return;                 // [5] 屬性訊號 + [6] translate="no" + [9] style
+			if (isAlreadyTargetLang(el, ctx.targetLang)) return;  // [8] 自身 lang 已是目標語
+		}
+		if (attrs) for (const attr of attrs) collectOneAttribute(el, attr);
+		if (takesTitle) collectOneAttribute(el, GLOBAL_ATTRIBUTE_TARGET);
+	}
+
+	/**
+	 * §3.9 單一屬性成段（白名單與剪枝由呼叫端 collectAttributes 判完）。
+	 * @param {Element} el
+	 * @param {string} attr
+	 */
+	function collectOneAttribute(el, attr) {
+		if (!attributeApplies(el, attr)) return;
+		const raw = el.getAttribute(attr);
+		if (raw == null) return;
+		// 逐屬性防自吞：標記值＝上一輪寫進去的譯文逐字副本，與現值全等＝我方譯文還在原位、
+		// 這個屬性這一輪不必再採。不等＝站台自己改過（SPA 換文案），當作新內容重新採集。
+		//
+		// 判準用**全等**、不是段落軸那條「仍含」：段落軸要容忍站台在同一顆元素上追加子節點
+		// （計數 badge、icon）而譯文仍在原位，屬性值沒有子節點這回事，改了就是整個被換掉。
+		// 殘留的兩個 data 屬性一律留到插回期才處理（§8 讀寫分離：採集期不寫 DOM）——
+		// 新值仍走屬性軸就被整批蓋掉，是這條路上唯一的結局。
+		if (el.getAttribute(attributeTranslatedMark(attr)) === raw) return;
+		const source = normalizeSource(raw);
+		if (source === "") return;
+		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "attribute" });
+		const id = makeId(walkId, order);
+		const region = regionOfBlock(el);
+		// anchor.block 是 Element ⇒ observeSegments 的 observe 與 defaultMeasure 的 rect 量測
+		// 天生可用，屬性軸不需要另開一條排程路徑。refNode 只有並列插回會讀。
+		const anchor = { block: el, insertMode: "replace-attr", attr, refNode: null };
+		if (!wt.worth) {
 			segments.push({
 				id, order, region, source, kind: "attribute", anchor,
-				state: SegmentState.PENDING, meta: { replaceSnapshot: raw },
+				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 			});
 			order++;
+			return;
 		}
+		segments.push({
+			id, order, region, source, kind: "attribute", anchor,
+			state: SegmentState.PENDING, meta: { replaceSnapshot: raw },
+		});
+		order++;
 	}
 
 	/**
 	 * §3.9 行內子樹裡的屬性宿主。走法與 collect 的分支語義一致：SKIP_SUBTREE 的元素交給
 	 * collectAttributes（白名單與剪枝訊號由它自己判，非白名單者連帶不下探——`<span hidden><img>`
 	 * 因此整棵擋住）、OPAQUE_INLINE 不下探（`<code>`／`<time>` 是不可分割原子）、其餘續往下走。
+	 * 走訪到的元素（含 OPAQUE_INLINE 自身）的全域 `title` 一律交給 collectAttributes 帶 `walked` 採。
 	 * @param {Node} node
 	 */
 	function collectAttributesWithin(node) {
 		for (const [child, label] of effectiveChildren(node)) {
 			if (child.nodeType !== NODE_ELEMENT) continue;
 			if (label.disp === "SKIP_SUBTREE") { collectAttributes(child); continue; }
+			// 走訪到的元素自身仍可能掛 `title`（`<p><a title="…">…</a></p>`）——採它、不下探
+			// 的規則不變：OPAQUE 是不可分割原子，它的子樹不再走。
+			if (hasOwnTitle(child)) collectAttributes(child, { walked: true });
 			if (label.disp === "OPAQUE_INLINE") continue;
 			collectAttributesWithin(child);
 		}
@@ -1324,11 +1414,10 @@ function collectSegments(root, ctx, opts = {}) {
 			: { source: normalizeSource(text), map: null };
 		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
 		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh });
-		const id = makeId(walkId, order);
 		const region = regionOfBlock(blockNode);
 		if (!wt.worth) {
 			segments.push({
-				id, order, region, source, anchor: makeAnchor(buf, blockNode),
+				id: makeId(walkId, order), order, region, source, anchor: makeAnchor(buf, blockNode),
 				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 			});
 			order++;
@@ -1337,9 +1426,17 @@ function collectSegments(root, ctx, opts = {}) {
 		// §9.2：插回模式在採集期決定（render 只認 anchor.insertMode、不再各自判斷觸發條件）。
 		const buttonClass = isButtonClassCandidate(blockNode, source);
 		const insertMode = decideInsertMode(blockNode, source, buttonClass);
+		// §9.2 碎片軸：整段成一段的路到此為止，改由 makeFragmentSegments 逐 text node 各產一段。
+		// 整段的 `source`／`spans` 在此之前已算過，但那是**這條分支的前置條件**、不是白算：
+		// `worthTranslating` 的九條判準（URL／email／已達標…）與 `decideInsertMode` 的漢字安全閘
+		// 都問「這整段值不值得、該不該就地換字」，碎片化只在整段已通過之後才細分粒度。
+		if (insertMode === "replace-text") {
+			makeFragmentSegments(buf, blockNode, region);
+			return;
+		}
 		/** @type {Segment} */
 		const seg = {
-			id, order, region, source,
+			id: makeId(walkId, order), order, region, source,
 			anchor: makeAnchor(buf, blockNode, insertMode), state: SegmentState.PENDING,
 		};
 		// §P4：button-class 是「段的種類」分類，保留供觀測／後續規則用；插回行為看 insertMode。
@@ -1356,6 +1453,69 @@ function collectSegments(root, ctx, opts = {}) {
 		}
 		segments.push(seg);
 		order++;
+	}
+
+	/**
+	 * §9.2 碎片軸：buffer 內每個 text node 各成一段（`insertMode = "replace-text"`）。
+	 *
+	 * **只服務簡→繁就地換字這一條路**（`decideInsertMode` 的②軸）。一般翻譯軸不碎片化：
+	 * 逐 text node 送翻等於把一句話拆成幾截各自翻，語序與上下文都會壞；簡→繁不重排語序，
+	 * 拆開送翻與整段送翻的結果逐字相同，才換得到「元素結構一個都不碰」這個好處。
+	 *
+	 * 文字來源與 `extractText` 同一套過濾（見 fragmentTextNodes）：SKIP_SUBTREE 子樹不採、
+	 * `<rt>`／`<rp>` 注音不採、OPAQUE（`<code>`／`<time>`）整棵不採——後者順帶讓
+	 * `protectedSpans` 在碎片段上恆為空：不可翻的原子直接不進碎片，比事後靠位移保護更強。
+	 * `<br>` 在整段軸是接一個 `\n`、在碎片軸則自然落在兩個 text node 的邊界上。
+	 *
+	 * @param {Node[]} buf
+	 * @param {Node} blockNode
+	 * @param {RegionValue} region  整段軸已算好的段 region，碎片共用（同一個 block、同一個區域）
+	 */
+	function makeFragmentSegments(buf, blockNode, region) {
+		// 同一顆 block 的碎片共用一份結算計畫：render 端逐段被呼叫（translateSegment →
+		// insertTranslations([seg])），沒有這份跨呼叫的共用物件，「全有或全無」就只在批次呼叫
+		// 的測試裡成立，生產路徑上每次呼叫都只看得到一顆碎片、必然逐顆各寫各的。
+		// 另存整顆 block 的逐字文字：碎片各自的快照只蓋得住「會成為碎片的那些 text node」，而防自吞
+		// 標記的值是整顆 textContent。落在標記內、卻不在任何碎片裡的文字有兩類——判掉的碎片
+		// （數字／標點／網址，不進 total、也沒有 replaceSnapshot）與剪枝子樹裡的文字
+		// （hidden／aria-hidden／translate=no，fragmentTextNodes 根本不走訪）。站台在採集後改掉
+		// 這兩類文字，逐碎片的檢查全數通過、整批照寫，標記於是把站台剛換上的新內容一起包了進去
+		// ⇒ classifyNode [1] 的「標記值仍在現值裡」恆成立、整棵跳過，新內容被鎖成已譯且不自癒。
+		// 整段軸本來就有這道 block 級比對（`block.textContent !== snapshot` 即放棄），碎片軸補上。
+		/** @type {FragmentPlan} */
+		const group = {
+			block: /** @type {Element} */ (blockNode),
+			total: 0, arrived: 0, writes: [], checks: [], refused: false, applied: false,
+			blockSnapshot: typeof blockNode.textContent === "string" ? blockNode.textContent : null,
+		};
+		for (const textNode of fragmentTextNodes(buf, labelOf)) {
+			// raw 是這顆 text node 的逐字原值：既當插回時的防呆快照，也是寫回時要保留的前後空白來源。
+			const raw = textNode.nodeValue || "";
+			const source = normalizeSource(raw);
+			if (source === "") continue; // §6 / C2 同一條：純空白節點不產段（連 skipped 都不建）
+			// 極短門檻對碎片無效（unit）：`<p>看 <strong>這裡</strong> 吧</p>` 拆出來的「看」「吧」
+			// 是完整、使用者讀得到的字，套段落的門檻會把它們整批判掉、只剩中間那截被換字。
+			const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "fragment" });
+			const anchor = { block: blockNode, insertMode: "replace-text", textNode, refNode: textNode };
+			if (!wt.worth) {
+				segments.push({
+					id: makeId(walkId, order), order, region, source, anchor,
+					state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
+				});
+				order++;
+				continue;
+			}
+			// 只有 PENDING 的碎片會走到 render，故也只有它們計進 total；SKIPPED 的碎片永遠不會
+			// 到達，計進去會讓整顆 block 永遠等不到齊。
+			anchor.fragmentGroup = group;
+			group.total++;
+			segments.push({
+				id: makeId(walkId, order), order, region, source, kind: "fragment", anchor,
+				state: SegmentState.PENDING,
+				meta: { replaceSnapshot: raw, charCount: source.length },
+			});
+			order++;
+		}
 	}
 
 	// root 自身的處置也算數：`walkAndLabel` 會分類 root，落 SKIP_SUBTREE / OPAQUE_INLINE 就整棵
@@ -1442,6 +1602,40 @@ function extractText(buf, labelOf) {
 		text = appendNode(node, text, spans, labelOf);
 	}
 	return { text, spans };
+}
+
+/**
+ * §9.2 碎片軸的文字來源：buffer 攤成逐個 text node，套用與 `extractText` **同一套**過濾。
+ *
+ * 逐條對應（走同一份 tag 特判，不另立第二套規則）：
+ * - `<br>`：整段軸接一個 `\n`，碎片軸不必特判——`<br>` 本來就把文字切成兩顆 text node。
+ * - `<rt>`／`<rp>`：ruby 只取 base，同樣不採。
+ * - OPAQUE（`<code>`／`<time>`）：整段軸併成不可翻的原子並記 `protectedSpan`，碎片軸**整棵不採**
+ *   ——碎片是逐節點換字，原子既然不可翻就不該有自己的段，也沒有位移需要保護。
+ * - 其餘 inline：遞迴子節點，`labelOf` 命中 SKIP_SUBTREE 的子樹整棵不取（隱私過濾，見 appendNode
+ *   的註解；碎片軸的呼叫端一律傳 `labelOf`）。
+ *
+ * @param {Node[]} buf
+ * @param {((node: Node) => NodeLabel)} [labelOf]
+ * @returns {Text[]} 文件序的 text node（不含純空白的篩選由呼叫端做——那是「值不值得翻」那一層）
+ */
+function fragmentTextNodes(buf, labelOf) {
+	/** @type {Text[]} */
+	const out = [];
+	const visit = (node) => {
+		if (node.nodeType === NODE_TEXT) { out.push(/** @type {Text} */ (node)); return; }
+		if (node.nodeType !== NODE_ELEMENT) return;
+		const el = /** @type {Element} */ (node);
+		const tag = el.tagName;
+		if (tag === "BR" || tag === "RT" || tag === "RP") return;
+		if (OPAQUE_INLINE_TAGS.has(tag)) return;
+		for (const child of childNodes(el)) {
+			if (labelOf && labelOf(child).disp === "SKIP_SUBTREE") continue;
+			visit(child);
+		}
+	};
+	for (const node of buf) visit(node);
+	return out;
 }
 
 /**
@@ -1648,25 +1842,119 @@ function remapSpansToSource(spans, map) {
  * wrapper 帶 `data-koine-id` + `koine-translated` class——再次採集時 classifyNode [1]
  * 先擋自家標記、整棵跳過，故插回不會被自己重採（§7.1 (c) 自吞防護）。
  * 只新增 sibling、不改動原文節點的內容（§7.1 (b)）。唯一會碰到原文節點的是**清除**：該節點
- * 上一輪若走過原地換字、這一輪退回並列插回，插 wrapper 前會把原地換字軸留下的三個標記清掉
+ * 上一輪若走過原地換字、這一輪退回並列插回，插 wrapper 前會把原地換字軸留下的兩個標記清掉
  * （見下方 after-segment 分支），否則沒有任何路徑會再刷新它們。
  *
  * §9.2 例外：`anchor.insertMode === "replace"` 的段改走**原地換字**——不建 wrapper，直接覆寫
- * `block.textContent`，原文存 `title` 與 `data-koine-original`，並以 `data-koine-translated`
+ * `block.textContent`，原文存 `data-koine-original`，並以 `data-koine-translated`
  * 當防自吞標記——**值＝寫入的譯文逐字副本**，標記消失或值對不上當下內容都視為未譯、下次採集
  * 會重新產生待譯段（站台自己改字的情形見 classifyNode [1]）。
  *
  * **本分支是 replace 的唯一實作**：觸發條件（§P4 button-class／簡→繁語言對）全在採集期收斂成
  * `insertMode`，render 只看這一個鍵——兩條軸不各做一套、行為不會漂移。
  *
+ * §9.2 另一例外：`anchor.insertMode === "replace-text"` 的段（碎片軸）只改一顆 text node 的
+ * `nodeValue`，元素節點完全不動；標記與備份仍記在 `anchor.block` 上。碎片**以 block 為單位
+ * 全有或全無**：同一顆 block 的碎片只要有一顆寫不成，整顆一個字都不寫、不留標記——理由見
+ * 下方套用迴圈。**結算跨呼叫**：生產路徑是每段各自 `insertTranslations([seg])`（見
+ * `translateSegment`），計畫因此掛在採集期建立的 `anchor.fragmentGroup` 上、活過單次呼叫。
+ *
  * @param {Segment[]} segments
  * @param {{ tag?: string }} [opts]   tag 預設 `div`（M1 固定 block；tag-mirror 留後續；replace 段不適用）
- * @returns {Element[]} 已插入的 wrapper 或原地換字的元素（依處理序）
+ * @returns {Element[]} 已插入的 wrapper 或原地換字的元素（依處理序）。碎片軸的 block 只在
+ *   「同顆 block 的碎片全數到齊」的那一次呼叫裡套用 ⇒ 一顆 block 至多出現一次、且排在該次
+ *   回傳陣列的末端；兄弟尚未到齊的呼叫回傳裡沒有它。
  */
+/**
+ * §9.2 碎片寫入此刻是否仍成立：值仍是採集當下的逐字快照、且節點此刻仍掛在自己的 block 底下。
+ *
+ * 字面相等還不夠：站台把整顆節點從 DOM 拆下來（SPA 換版、`element.replaceChildren`）之後，
+ * 拆下來的那顆仍留著原值 ⇒ 快照照樣對得上，而寫進去的譯文永遠不會顯示在頁面上，標記卻已經
+ * 記成「這段譯好了」。缺快照（防禦路徑、呼叫端手搭 segment）一律視為不可信。
+ *
+ * **到達時與套用前各檢一次**：碎片是延後套用的（等同顆 block 的兄弟到齊），兩個時刻之間
+ * 站台仍可能改字或換掉節點。
+ *
+ * @param {Element} block
+ * @param {Node|null|undefined} textNode
+ * @param {string|null} snapshot
+ * @returns {boolean}
+ */
+function fragmentWriteStillValid(block, textNode, snapshot) {
+	return !!textNode && textNode.nodeType === NODE_TEXT && typeof snapshot === "string"
+		&& textNode.nodeValue === snapshot
+		&& typeof block.contains === "function" && block.contains(textNode);
+}
+
 function insertTranslations(segments, opts = {}) {
 	const tag = opts.tag || "div";
 	/** @type {Element[]} */
 	const inserted = [];
+	/** 手搭 segment（`anchor.fragmentGroup` 缺席的防禦路徑）的退路：退回「本次呼叫內結算」。
+	 * @type {Map<Element, FragmentPlan>} */
+	const callScopedPlans = new Map();
+	/** 本次呼叫碰過的碎片計畫，走完迴圈逐一判斷是否已可套用。
+	 * @type {Set<FragmentPlan>} */
+	const touchedPlans = new Set();
+	/**
+	 * 登記一顆碎片段「已到達 render」（不論最後寫不寫得成），回傳它所屬的計畫；非碎片段回 `null`。
+	 *
+	 * **到達數是結算的唯一依據**：譯失敗的段停在 FAILED、根本不會進本函式（見 `translateSegment`），
+	 * 於是該顆 block 的計畫永遠差一顆、一個字都不寫、不留標記，下一輪採集照樣撈得回整段未譯內容
+	 * ——那正是全有或全無要的結果，不必另設失敗回報路徑。
+	 * @param {Segment} seg
+	 * @returns {FragmentPlan|null}
+	 */
+	function arriveFragment(seg) {
+		if (!seg.anchor || seg.anchor.insertMode !== "replace-text") return null;
+		const block = seg.anchor.block;
+		if (!block) return null;
+		// 計的是「相異碎片數」、不是「插回次數」：同一顆碎片被插回兩次就會湊足到齊數，於是兄弟
+		// 還沒回來就整批寫入、只寫得出半顆區塊，防自吞標記卻照樣寫上——正是全有或全無要擋的鎖死。
+		// 生產路徑到不了（translateSegment 以段狀態守住、譯好的段不會再送一次），但呼叫端手動
+		// 重送是既有的防禦路徑，這裡一併守住。
+		let plan = seg.anchor.fragmentGroup;
+		if (!plan) {
+			plan = callScopedPlans.get(block);
+			if (!plan) {
+				// 手搭路徑沒有採集期，block 級快照無從取得（此刻讀到的已經是「插回當下」的值、
+				// 比了等於自己跟自己比）⇒ 記 `null`、退回逐碎片檢查，與 `total: null` 同一條退路。
+				plan = { block, total: null, arrived: 0, writes: [], checks: [], refused: false, applied: false, blockSnapshot: null };
+				callScopedPlans.set(block, plan);
+			}
+		}
+		if (!plan.seen) plan.seen = new WeakSet();
+		if (!plan.seen.has(seg)) {
+			plan.seen.add(seg);
+			plan.arrived++;
+		}
+		touchedPlans.add(plan);
+		return plan;
+	}
+	/**
+	 * 登記一顆「不寫 DOM 的碎片」進計畫的 drift 檢查清單。
+	 *
+	 * **無寫入不等於免驗**：譯文＝原文（空字串）或根本沒有譯文的碎片不進 `writes`，而 `writes`
+	 * 正是到達時與套用前兩道 drift 檢查掃的唯一清單 ⇒ 這種碎片對兩道檢查都是盲的。站台在這段
+	 * 期間換掉它那顆 text node，整顆 block 照樣被判「全員到齊且全員有效」而寫入譯文與防自吞
+	 * 標記（值＝整顆 textContent），於是 classifyNode [1] 之後每輪採集整棵跳過——站台剛換上的
+	 * 新內容被鎖成已譯、不自癒，正是本軸「全有或全無」要擋的失效模式。
+	 *
+	 * 故改成一樣記進計畫、只是記在另一份清單：不產生任何 `nodeValue` 寫入（回寫同值仍會產出
+	 * mutation record，與本檔既有的 MutationObserver 再入顧慮相衝），只讓兩道檢查掃得到它。
+	 * 缺快照／快照對不上一律 refuse 整顆 block，與有譯文的碎片同一條紀律。
+	 * @param {FragmentPlan} plan
+	 * @param {Segment} seg
+	 * @returns {void}
+	 */
+	function checkSilentFragment(plan, seg) {
+		const block = plan.block;
+		if (typeof block.contains !== "function") { plan.refused = true; return; }
+		const textNode = seg.anchor.textNode;
+		const snapshot = seg.meta && typeof seg.meta.replaceSnapshot === "string" ? seg.meta.replaceSnapshot : null;
+		if (!fragmentWriteStillValid(block, textNode, snapshot)) { plan.refused = true; return; }
+		plan.checks.push({ textNode, snapshot });
+	}
 	for (const seg of segments) {
 		if (seg.state !== SegmentState.DRAFTED) continue; // 只消費 drafted（pending / skipped 跳過）
 		const text = seg.refined ?? seg.draft;            // §9.1 並列取值 refined ?? draft
@@ -1684,9 +1972,21 @@ function insertTranslations(segments, opts = {}) {
 		// 兩條分開寫、不併成一條：`text == null` 與 `""` 是**有效終態**（未譯／譯文＝原文，見 §9.1），
 		// 靜默跳過是對的；非字串是**程式錯誤**（呼叫端或未來的 refine 寫入端寫壞），靜默跳過會讓
 		// 現場呈現成「翻了但沒出現」且無從追——這條值得吵一聲。
-		if (text == null || text === "") continue;        // 有效終態：無譯文 / 譯文=原文
+		// 有效終態：無譯文 / 譯文＝原文。碎片段仍得登記到達——「譯文＝原文」在碎片軸是常態
+		// （`<p>看 <strong>这里</strong> 吧</p>` 拆出來的「看」「吧」簡繁同形），不登記的話
+		// 同顆 block 的計畫永遠差這一顆、其餘碎片跟著一個字都寫不出來。
+		// 不寫 DOM 仍得驗 drift：見 checkSilentFragment。`text == null`（未譯）與 `""`（譯文＝原文）
+		// 在碎片軸是同一種終態——都不寫字、都必須參與整顆 block 的 drift 結算。
+		if (text == null || text === "") {
+			const silentPlan = arriveFragment(seg);
+			if (silentPlan) checkSilentFragment(silentPlan, seg);
+			continue;
+		}
 		if (typeof text !== "string") {
 			console.warn("[雅言] 譯文非字串、跳過插回", seg.id, typeof text);
+			// 碎片軸：非字串是程式錯誤、不是有效終態 ⇒ 整顆 block 放棄（與 drift 同處置）。
+			const badPlan = arriveFragment(seg);
+			if (badPlan) badPlan.refused = true;
 			continue;
 		}
 		const block = seg.anchor && seg.anchor.block;
@@ -1713,6 +2013,29 @@ function insertTranslations(segments, opts = {}) {
 			continue;
 		}
 
+		// §9.2 replace-text：碎片軸的原地換字——只寫一顆 text node 的 nodeValue，元素節點一個都不碰。
+		// 本迴圈只做**驗收**、不寫 DOM：同一顆 block 的碎片要一起成立才寫（見下方套用迴圈），
+		// 而 drift 可能出現在任何一顆上，非得整批看過才知道。
+		if (seg.anchor.insertMode === "replace-text") {
+			const plan = arriveFragment(seg);
+			if (!plan) continue;
+			if (typeof block.setAttribute !== "function" || typeof block.contains !== "function") {
+				plan.refused = true;
+				continue;
+			}
+			const textNode = seg.anchor.textNode;
+			const snapshot = seg.meta && typeof seg.meta.replaceSnapshot === "string" ? seg.meta.replaceSnapshot : null;
+			if (!fragmentWriteStillValid(block, textNode, snapshot)) {
+				plan.refused = true;
+				continue;
+			}
+			// 前後空白照原樣留住：`source` 過 normalizeSource 已 trim，直接寫譯文會把
+			// `<em>強調</em> 之後` 這種 inline 之間的間隔吃掉（元素外觀保留不可退讓）。
+			const [, lead, , trail] = /^(\s*)([\s\S]*?)(\s*)$/u.exec(snapshot);
+			plan.writes.push({ textNode, snapshot, value: lead + text + trail });
+			continue;
+		}
+
 		// §9.2 replace：原地換字，不加 wrapper（§P4 KO-5/6/7 與簡→繁共用本分支）。
 		if ((seg.anchor.insertMode || "after-segment") === "replace") {
 			if (typeof block.setAttribute !== "function") continue;
@@ -1733,46 +2056,10 @@ function insertTranslations(segments, opts = {}) {
 			if (!hasOnlyTextChildren(/** @type {Element} */ (block))) continue;
 			// KO-7 原文存 data 屬性（純資料、無 AT 影響）。這裡刻意存**未過濾的 snapshot**、不是
 			// seg.source——它是還原用的逐字副本，連原始空白一起留住才還原得回去。
-			// ⚠ 給未來寫還原路徑的人：要還原一律讀 `data-koine-original`（逐字），**不要讀 `title`**
-			// ——三個理由，最後一個最危險：①它是 normalize 後的展示字串；②長度超標時根本不存在；
-			// ③元素本來就有 `title` 時下面的守衛會**刻意保留站台自己的字串**，於是 `title` 會是一個
-			// 「長得很像原文」的錯字串。前兩者的失敗看得見（讀到空的），第三者會靜默寫錯回頁面。
+			// ⚠ 給未來寫還原路徑的人：內文一律讀 `data-koine-original`（逐字），`title` 另有自己的
+			// 一份備份（`data-koine-original-title`，見屬性軸）——兩條軸各存各的、不互相代讀。
 			block.setAttribute("data-koine-original", snapshot);
-			// KO-6 原文存 title tooltip，但兩個前提：①元素本來沒有 `title`——覆寫會抹掉站台自己的
-			// 提示且無還原路徑；②原文短到適合當 tooltip（見 REPLACE_TITLE_MAX_CHARS）。
-			// 不符就只留 `data-koine-original`。
-			//
-			// **長度與內容都取 `seg.source`、不取 `snapshot`**：snapshot 是原始 textContent，含
-			// HTML 縮排；而①軸的 BUTTON_CLASS_MAX_CHARS 卡的是 normalize 後的 source。兩者比錯
-			// 邊，`<button>\n  确认提交\n</button>` 這種多行排版（真實 HTML 的主流寫法）會算成
-			// 24 字而靜默失去 title，同一顆按鈕寫成一行就有——KO-6 的 tooltip 會在真實頁面上
-			// 大面積失效。title 顯示的也該是使用者看得懂的那一版，不是帶縮排的原字串。
-			// `typeof` 守衛不可省：insertTranslations 是公開匯出、呼叫端可能手搭 segment，
-			// 而 throw 會逃出整個 for 迴圈、把同批其他段一起中止（其餘防禦路徑都只 continue）。
-			//
-			// `data-koine-title` 記「這顆 title 是我方寫的」：站台自己改字後同一顆節點會被重新
-			// 採集、重新覆寫（見 classifyNode [1]），沒有這個所有權標記就分不出「元素本來有 title」
-			// 與「title 是上一輪的我方原文」，前者不能碰、後者不刷新就會留著一句對不上目前內容的
-			// 舊原文當 tooltip。
-			//
-			// 標記存**寫進去的 title 逐字副本**、不是空值，理由與 `data-koine-translated` 同一條：
-			// 只記「曾經寫過」分不出站台事後自己改了 `title`——站台改字時一併設自己的 tooltip，
-			// 下一輪就會把它當成我方上一輪的字串覆寫掉，且 `data-koine-original` 只存內文、無還原路徑。
-			// 現值等於標記值才是「還是我方那一份」，才可以刷新。
-			const titleOwned = block.hasAttribute("data-koine-title")
-				&& block.getAttribute("title") === block.getAttribute("data-koine-title");
-			const titleFits = typeof seg.source === "string"
-				&& seg.source.length <= REPLACE_TITLE_MAX_CHARS;
-			if ((!block.hasAttribute("title") || titleOwned) && titleFits) {
-				block.setAttribute("title", seg.source);
-				block.setAttribute("data-koine-title", seg.source);
-			} else if (titleOwned) {
-				// 我方上一輪寫的 title 這次配不上（新原文超過長度閘、或非字串）：留著就是一句
-				// 對不上目前內文的舊原文，連同所有權標記一起撤掉，不留對不上的值。
-				block.removeAttribute("title");
-				block.removeAttribute("data-koine-title");
-			}
-			block.textContent = text;                               // KO-6 直接換
+			block.textContent = text;                               // 原地換字
 			// KO-7 防自吞標記：值＝剛寫進去的譯文逐字副本。classifyNode [1] 拿它跟當下的
 			// textContent 比，仍含它才跳過（站台追加子節點時譯文還在原位、照舊跳過）；標記消失、
 			// 或整段被換掉到不再含這份副本，才視為未譯、下次採集重新產生待譯段。
@@ -1786,20 +2073,14 @@ function insertTranslations(segments, opts = {}) {
 		if (!doc) continue;
 		// 這一段上一輪走原地換字、這一輪落到並列插回：站台把文字換成新內容後重新採集，而新原文
 		// 不再符合原地換字判準（按鈕軸超過 BUTTON_CLASS_MAX_CHARS 是最常見的一種），
-		// decideInsertMode 就會改回 after-segment。原地換字軸留在元素上的三個標記全部指向**上一輪**
-		// 的內容，而刷新它們的碼只寫在 replace 分支 ⇒ 不在這裡清，這顆元素會永遠帶著一句對不上
-		// 內文的 tooltip 與停在上一輪的快照／防自吞標記，往後每一輪都落在這條路徑、沒有人會刷新。
+		// decideInsertMode 就會改回 after-segment。原地換字軸留在元素上的兩個標記都指向**上一輪**
+		// 的內容，而刷新它們的碼只寫在 replace 分支 ⇒ 不在這裡清，這顆元素會永遠帶著停在上一輪的
+		// 快照與防自吞標記，往後每一輪都落在這條路徑、沒有人會刷新。
 		// 清除與 wrapper 的插入同屬寫入期，不違 §8 讀寫分離。
+		// `title` 不在此處理：它自成一段（屬性軸），刷新與清除由該軸自己的標記負責。
 		if (typeof block.hasAttribute === "function" && block.hasAttribute("data-koine-translated")) {
 			block.removeAttribute("data-koine-translated");
 			block.removeAttribute("data-koine-original");
-			// title 只撤我方那一份：現值與所有權標記逐字相同才算數（站台事後自己設的 tooltip 不碰，
-			// 判準與 replace 分支的 titleOwned 同一條）。所有權標記本身無論如何都撤——title 已不歸
-			// 我方所有，留著只會讓下一輪誤判擁有權。
-			const ownsTitle = block.hasAttribute("data-koine-title")
-				&& block.getAttribute("title") === block.getAttribute("data-koine-title");
-			if (ownsTitle) block.removeAttribute("title");
-			block.removeAttribute("data-koine-title");
 		}
 		const wrapper = doc.createElement(tag);
 		wrapper.setAttribute("data-koine-id", seg.id);
@@ -1807,6 +2088,53 @@ function insertTranslations(segments, opts = {}) {
 		wrapper.textContent = text;
 		block.after(wrapper);
 		inserted.push(wrapper);
+	}
+
+	// §9.2 碎片軸的套用：**以 block 為單位全有或全無**。
+	//
+	// 整段軸的 drift 表現成「一個字都不寫、不留標記」，下一輪採集因此看得到那段新內容。碎片軸
+	// 若逐顆各寫各的就少了這個性質：一顆 drift、其餘照寫，最後那道防自吞標記（值＝整顆
+	// textContent）仍會被寫上，於是 classifyNode [1] 判「標記值仍在現值裡」成立、整顆 block
+	// 從此跳過——**站台剛換上去的那顆新內容被鎖成已譯、且不會自癒**，正是該標記要擋的事。
+	// 一起成立才寫、否則整批放棄，下一輪重採，與整段軸同一條紀律。
+	//
+	// 「一起」的範圍是**同顆 block 的全部碎片**、不是「本次呼叫收到的碎片」：生產路徑逐段呼叫
+	// （`translateSegment` → `insertTranslations([seg])`），每次呼叫只看得到一顆碎片。故計畫
+	// 掛在採集期建立的 `anchor.fragmentGroup` 上、`total` 是該 block 產出的碎片數，到齊才套用。
+	for (const plan of touchedPlans) {
+		const block = plan.block;
+		if (plan.applied || plan.refused || plan.writes.length === 0) continue;
+		if (plan.total != null && plan.arrived < plan.total) continue; // 兄弟未到齊：留給最後到的那次呼叫
+		// 延後套用開出一段時間窗：到達時驗過的快照，到這一刻站台仍可能改字或把節點換掉。整批
+		// 重驗一次，任一顆不過＝整顆放棄（與到達時同一條紀律，不因為已經等過就放寬）。
+		// 不寫字的碎片（譯文＝原文／未譯）同樣要過這一關：它們不在 `writes` 裡，漏掉就等於在
+		// 整批寫入前對它們閉眼，drift 會被寫進防自吞標記而鎖死整顆 block。
+		const stillValid = (w) => fragmentWriteStillValid(block, w.textNode, w.snapshot);
+		if (!plan.writes.every(stillValid) || !plan.checks.every(stillValid)) {
+			plan.refused = true;
+			continue;
+		}
+		// 再比一次整顆 block 的文字：逐碎片的檢查掃不到「不是碎片的那些文字」（判掉的碎片、剪枝
+		// 子樹內的文字），而防自吞標記的值是整顆 textContent ⇒ 漏比就等於把站台剛換上的新內容
+		// 包進標記、鎖成已譯且不自癒（理由全文見 makeFragmentSegments 的 blockSnapshot 註解）。
+		// 排在任何寫入之前：這一行到寫標記之間全是同步碼，沒有第二個窗口。
+		// 只比這一次、不在到達時比：碎片到達與整批套用之間站台若改了又改回去，並不會造成鎖死，
+		// 真正要擋的是「寫入當下對不上」；而每顆碎片到達各讀一次整顆 textContent 是逐節點的白工。
+		if (plan.blockSnapshot !== null && (block.textContent || "") !== plan.blockSnapshot) {
+			plan.refused = true;
+			continue;
+		}
+		// 原文逐字備份在先（同整段軸），且只存第一次寫入前的完整原文：這裡尚未動過任何節點，
+		// 讀到的就是還原所需的原樣；已有備份代表上一輪存過，不覆寫成半譯的中間態。
+		if (typeof block.hasAttribute === "function" && !block.hasAttribute("data-koine-original")) {
+			block.setAttribute("data-koine-original", block.textContent || "");
+		}
+		for (const { textNode, value } of plan.writes) textNode.nodeValue = value;
+		// 防自吞標記：值＝寫入後 block 的整顆 textContent。classifyNode [1] 的「仍含標記值」
+		// 判準因此對碎片段照舊成立。
+		block.setAttribute("data-koine-translated", block.textContent || "");
+		plan.applied = true;
+		inserted.push(block);
 	}
 	return inserted;
 }
@@ -2140,7 +2468,7 @@ const __koineExports = {
 	classifyZhVariant, isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
 	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,
 	attributeApplies, attributeOriginalMark, attributeTranslatedMark,
-	REPLACE_TITLE_MAX_CHARS,
+	GLOBAL_ATTRIBUTE_TARGET,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,

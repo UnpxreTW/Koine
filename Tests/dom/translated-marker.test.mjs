@@ -80,21 +80,21 @@ test("重新覆寫時 data-koine-original 與標記一起刷成新值（殘留�
 	assert.equal(btn.textContent, "譯‹登出›", "應以新內容的譯文再次原地換字");
 	assert.equal(btn.getAttribute("data-koine-original"), "登出", "原文快照應刷成站台改後的值");
 	assert.equal(btn.getAttribute("data-koine-translated"), "譯‹登出›", "標記應刷成新譯文");
-	assert.equal(btn.getAttribute("title"), "登出", "tooltip 應刷成新原文、不留上一輪的舊原文");
+	assert.ok(!btn.hasAttribute("title"), "內文軸不寫 tooltip（元素本來沒有 title 就不該長出一個）");
 	assert.equal(doc.querySelectorAll(".koine-translated").length, 0, "全程不應建 wrapper");
 });
 
-test("元素本來就有站台自己的 title：重譯時照樣不覆寫（所有權標記只認我方寫的）", () => {
+test("元素既有的 title 由屬性軸翻一次就停：內文重譯不得把譯文再翻一次", () => {
 	const doc = docFrom(`<button id="b" title="站台提示">送出</button>`);
 	translateOnce(doc);
 	const btn = doc.getElementById("b");
-	assert.equal(btn.getAttribute("title"), "站台提示", "前提：首次插回不得抹掉站台的 title");
-	assert.ok(!btn.hasAttribute("data-koine-title"), "前提：沒寫 title 就不該記所有權");
+	assert.equal(btn.getAttribute("title"), "譯‹站台提示›", "前提：title 應由屬性軸換成譯文");
+	assert.equal(btn.getAttribute("data-koine-original-title"), "站台提示", "前提：原值應留一份");
 
 	btn.textContent = "登出";
 	translateOnce(doc);
 
-	assert.equal(btn.getAttribute("title"), "站台提示", "重譯同樣不得抹掉站台的 title");
+	assert.equal(btn.getAttribute("title"), "譯‹站台提示›", "title 未被站台改過，不得重採重譯（自吞）");
 	assert.equal(btn.getAttribute("data-koine-translated"), "譯‹登出›", "換字本身仍應完成");
 });
 
@@ -145,47 +145,28 @@ test("站台追加純文字節點：同樣不得重採、頁面不得出現譯�
 	assert.equal(btn.textContent, "譯‹送出› (3)", "不得把自己的譯文再翻一次寫回頁面");
 });
 
-test("站台事後自己設 title：所有權標記值對不上 → 重譯不得覆寫站台的 tooltip", () => {
+test("站台事後自己設 title：屬性軸當成新內容翻，內文軸不插手", () => {
 	const doc = docFrom(`<button id="b">送出</button>`);
 	translateOnce(doc);
 	const btn = doc.getElementById("b");
-	assert.equal(btn.getAttribute("title"), "送出", "前提：元素原本無 title，首輪應寫入原文");
-	assert.equal(btn.getAttribute("data-koine-title"), "送出", "前提：所有權標記存寫入的 title 逐字副本");
+	assert.ok(!btn.hasAttribute("title"), "前提：元素原本無 title，內文軸不得憑空造一個");
 
-	// 站台改字時一併設自己的 tooltip：title 已不是我方那一份。
+	// 站台改字時一併設自己的 tooltip。
 	btn.textContent = "登出";
 	btn.setAttribute("title", "站台新提示");
 
 	translateOnce(doc);
 
-	assert.equal(btn.getAttribute("title"), "站台新提示", "只記「曾經寫過」會把站台的字串抹掉且無還原路徑");
+	assert.equal(btn.getAttribute("title"), "譯‹站台新提示›", "新出現的 tooltip 是可見文字、應被翻譯");
+	assert.equal(btn.getAttribute("data-koine-original-title"), "站台新提示", "原值應留一份");
 	assert.equal(btn.textContent, "譯‹登出›", "換字本身仍應完成");
 });
 
-test("我方寫的 title 配不上新原文（超過長度閘）：撤掉 title 與標記、不留對不上的舊值", () => {
-	const doc = docFrom(`<div lang="zh-CN"><p id="p">简体短句。</p></div>`);
-	translateOnce(doc);
-	const p = doc.getElementById("p");
-	assert.equal(p.getAttribute("title"), "简体短句。", "前提：短原文應寫進 tooltip");
-
-	// 站台換成長句：新原文超過 REPLACE_TITLE_MAX_CHARS，這一輪寫不進 title。
-	const long = "这是一段明显超过标题长度上限的简体中文句子内容。";
-	assert.ok(long.length > 20, "前提：新原文須超過長度閘才驗得到本條");
-	p.textContent = long;
-
-	translateOnce(doc);
-
-	assert.equal(p.textContent, `譯‹${long}›`, "內文仍應原地換字");
-	assert.ok(!p.hasAttribute("title"), "舊 tooltip 對不上目前內文、應撤掉而非留著");
-	assert.ok(!p.hasAttribute("data-koine-title"), "所有權標記應與 title 一起撤");
-});
-
-test("站台改字後退回並列插回：原地換字軸的殘留標記與 tooltip 應一併清掉", () => {
+test("站台改字後退回並列插回：原地換字軸的殘留標記應清掉", () => {
 	const doc = docFrom(`<button id="b">送出</button>`);
 	translateOnce(doc);
 	const btn = doc.getElementById("b");
 	assert.equal(btn.getAttribute("data-koine-translated"), "譯‹送出›", "前提：首輪應走原地換字並留標記");
-	assert.equal(btn.getAttribute("title"), "送出", "前提：首輪應把原文寫進 tooltip");
 
 	// 站台把同一顆按鈕的文案換成長字串：新原文超過按鈕軸長度閘 ⇒ 這一輪改走並列插回。
 	const long = "Sign out of every device in this workspace";
@@ -198,22 +179,20 @@ test("站台改字後退回並列插回：原地換字軸的殘留標記與 tool
 
 	assert.ok(!btn.hasAttribute("data-koine-translated"), "防自吞標記停在上一輪的譯文、應清掉");
 	assert.ok(!btn.hasAttribute("data-koine-original"), "原文快照停在上一輪的內容、應清掉");
-	assert.ok(!btn.hasAttribute("title"), "tooltip 存的是上一輪的原文、對不上目前內文、應撤掉");
-	assert.ok(!btn.hasAttribute("data-koine-title"), "所有權標記應與 title 一起撤");
 });
 
-test("退回並列插回時站台已自設 title：不得撤掉站台的 tooltip", () => {
+test("退回並列插回時元素帶著 title：內文軸的清除不得碰到屬性軸的成果", () => {
 	const doc = docFrom(`<button id="b">送出</button>`);
 	translateOnce(doc);
 	const btn = doc.getElementById("b");
 
-	// 站台改字時一併換上自己的 tooltip：title 已不是我方那一份。
+	// 站台改字時一併換上自己的 tooltip，且新文案長到會退回並列插回。
 	btn.textContent = "Sign out of every device in this workspace";
 	btn.setAttribute("title", "站台新提示");
 
 	translateOnce(doc);
 
-	assert.equal(btn.getAttribute("title"), "站台新提示", "非我方所有的 title 不得被撤");
-	assert.ok(!btn.hasAttribute("data-koine-title"), "所有權標記已對不上現值、應撤");
-	assert.ok(!btn.hasAttribute("data-koine-translated"), "防自吞標記仍應清掉");
+	assert.equal(btn.getAttribute("title"), "譯‹站台新提示›", "title 歸屬性軸，退回並列插回不得撤掉它");
+	assert.equal(btn.getAttribute("data-koine-translated-title"), "譯‹站台新提示›", "屬性軸標記應在位");
+	assert.ok(!btn.hasAttribute("data-koine-translated"), "內文軸的防自吞標記仍應清掉");
 });

@@ -273,8 +273,8 @@ const KNOWN_EXT = new Set([
 
 /**
  * @param {string} raw
- * @param {{ pageLangIsZh?: boolean, unit?: TranslationUnit }} [opts]
- *   `unit` 預設 `"segment"`；只有 R11 極短門檻看它，其餘九條規則對所有單位一律照套。
+ * @param {{ unit?: TranslationUnit }} [opts]
+ *   `unit` 預設 `"segment"`；只有 R11 極短門檻看它，其餘八條規則對所有單位一律照套。
  * @returns {WorthResult}
  */
 function worthTranslating(raw, opts = {}) {
@@ -295,18 +295,17 @@ function worthTranslating(raw, opts = {}) {
 	if (RE_PATH.test(t)) return { worth: false, reason: "path" };
 	if (isFilenameOnly(t)) return { worth: false, reason: "filename" };
 
-	// R9 already-target：整頁語言 gate（非逐段 Han-ratio）；kana / hangul 強制送翻。
-	if (opts.pageLangIsZh && RE_HAS_HAN.test(t) && !RE_HAS_KANA.test(t) && !RE_HAS_HANGUL.test(t)) {
-		return { worth: false, reason: "already-target" };
-	}
+	// 「這段已經是目標語」不在本函式判：那要看內容是哪一種語言，而本函式只認得出書寫系統。
+	// 舊版在此以整頁語言當 gate，繁中頁上的每一個漢字段（含內嵌的簡中區塊）一律判掉——
+	// 逐段判定改由 native 端依內容偵測，已達標的段在那裡回空譯文（＝不顯示）。
 
 	// R11 min-length：非漢字段，任何 \p{L} 字母數 < 2 才跳（非僅拉丁）。
 	//
 	// **只對段落單位生效**：這條的前提是「一整段話至少要有兩個字母才值得送翻」，而屬性單位天生
 	// 就是短字串——`alt="OK"`／`value="OK"` 是完整、使用者讀得到、且需要翻譯的文字，套上段落的
-	// 極短門檻會把整批屬性判掉。其餘九條（空白／emoji／純符號／純數字／email／URL／路徑／檔名／
-	// already-target）不分單位照套，故判準仍是這一支函式、沒有第二套（見 hasAttrSkipSignal 的
-	// 註解：兩處各寫一份就是讓它們漂開的路）。
+	// 極短門檻會把整批屬性判掉。其餘八條（空白／emoji／純符號／純數字／email／URL／路徑／檔名）
+	// 不分單位照套，故判準仍是這一支函式、沒有第二套（見 hasAttrSkipSignal 的註解：兩處各寫
+	// 一份就是讓它們漂開的路）。
 	if (unit === "segment" && !RE_HAS_HAN.test(t)) {
 		let letters = 0;
 		for (const c of t) if (RE_HAS_LETTER.test(c)) letters++;
@@ -402,45 +401,10 @@ function zhVariantSatisfies(targetVariant, langVariant) {
 }
 
 /**
- * 目標語預設值。`makeContext` 與 `main()` 共用同一份常數——`detectPageLangIsZh` 的判定必須與
- * `ctx.targetLang` 同源，兩處各寫一次字面值就是讓它們漂開的路。
+ * 目標語預設值。`makeContext` 與 `main()` 共用同一份常數——兩處各寫一次字面值就是讓它們
+ * 漂開的路。
  */
 const DEFAULT_TARGET_LANG = "zh-Hant";
-
-/**
- * §4.9 pageLangIsZh 偵測（P2）：main() 一次呼叫、餵給 makeContext，供 R9 already-target gate 用。
- *
- * 回傳的是**整頁級**的「已達目標語」判定，故必須看目標語：頁面 lang 與 targetLang 兩邊都過
- * `classifyZhVariant`，再由 `zhVariantSatisfies` 比對書寫變體（與段級 `isAlreadyTargetLang` 同一
- * 條判準，只是輸入來自 `<html lang>` 而非元素）。
- *
- * 三條分支：
- * 1. **目標語非中文**（`ja`／`en`…）→ 恆 false。R9 gate 只認漢字、表達不了「這頁已是日文」，對非中文
- *    目標把整頁級豁免關掉才安全；段級判定仍由 `isAlreadyTargetLang` 照常處理。
- * 2. **有 lang 屬性** → 只信標籤，不落到取樣 heuristic（簡體、認不出書寫系統、非中文語碼皆回 false）。
- * 3. **缺 lang 屬性** → 取樣文字 heuristic（含漢字、無假名／諺文 → 視為中文頁，同 R9 逐段邏輯）。
- *    內容偵測分不出簡繁，故只能得到裸 `zh` 這個「未指明書寫系統」的強度，一樣交給
- *    `zhVariantSatisfies` 裁決。⚠ **這條分支的兩側代價不對稱**：簡中目標下不豁免（多送一次翻譯，
- *    安全）；繁中目標下沿用裸 `zh` 的放行，於是**沒有 `<html lang>` 的簡體站會整頁被判已達標而
- *    不譯**。此為既有行為、非本次引入；要收掉它得引入簡繁字形偵測，屬另一條軸。
- *
- * @param {string | null | undefined} htmlLang document.documentElement 的 lang 屬性
- * @param {string} [sample] 缺 lang 屬性時的取樣文字（如 document.body.textContent 片段；呼叫端截斷）
- * @param {string} [targetLang] 目標語；預設與 `makeContext` 同源
- * @returns {boolean}
- */
-function detectPageLangIsZh(htmlLang, sample = "", targetLang = DEFAULT_TARGET_LANG) {
-	// falsy 一律回退預設值，對齊 `makeContext` 的 `opts.targetLang || DEFAULT_TARGET_LANG`：
-	// 參數預設值只擋 undefined，空字串會讓同一份 opts 在兩處得出不同目標語。
-	const targetVariant = classifyZhVariant(targetLang || DEFAULT_TARGET_LANG);
-	if (!targetVariant) return false;
-	const lang = htmlLang?.toLowerCase().trim();
-	if (lang) return zhVariantSatisfies(targetVariant, classifyZhVariant(lang));
-	// 「含漢字且無假名／諺文」——與 R9 同一套述詞，非「全為漢字」。
-	const sampleLooksZh = RE_HAS_HAN.test(sample)
-		&& !RE_HAS_KANA.test(sample) && !RE_HAS_HANGUL.test(sample);
-	return sampleLooksZh && zhVariantSatisfies(targetVariant, "zh");
-}
 
 // ============================================================================
 // ctx：採集情境（getStyle 注入、targetLang、站台覆寫、display 快取）
@@ -456,7 +420,6 @@ function detectPageLangIsZh(htmlLang, sample = "", targetLang = DEFAULT_TARGET_L
 /**
  * @typedef {object} CollectContext
  * @property {string} targetLang
- * @property {boolean} pageLangIsZh
  * @property {(el: Element) => StyleInfo} getStyle
  * @property {WeakMap<Element, StyleInfo>} _styleCache
  */
@@ -488,7 +451,6 @@ function makeContext(opts = {}) {
 	const cache = opts._styleCache || new WeakMap();
 	return {
 		targetLang: opts.targetLang || DEFAULT_TARGET_LANG,
-		pageLangIsZh: opts.pageLangIsZh ?? false,
 		getStyle: opts.getStyle || ((el) => browserGetStyle(el, cache)),
 		_styleCache: cache,
 	};
@@ -689,9 +651,8 @@ function isAlreadyTargetLang(el, targetLang) {
  * §3.6 目標語是否為繁中（`insertMode` 語言對軸用）。
  *
  * 走 `classifyZhVariant` + `zhVariantSatisfies`、**不自備語碼表**：問法是「繁體寫成的內容滿不滿足
- * 這個目標語」，答案為真即代表該目標語收繁體字——與段級 `isAlreadyTargetLang`、整頁級
- * `detectPageLangIsZh` 收斂到同一組變體定義。裸 `zh`（未指明書寫系統）照 `zhVariantSatisfies`
- * 既有的非對稱行為算繁中目標。
+ * 這個目標語」，答案為真即代表該目標語收繁體字——與段級 `isAlreadyTargetLang` 收斂到同一組
+ * 變體定義。裸 `zh`（未指明書寫系統）照 `zhVariantSatisfies` 既有的非對稱行為算繁中目標。
  *
  * **為什麼不留字串前綴表**：這個判定與另兩處是同一組知識（哪些語言標籤算繁體），各自列舉就得
  * 人工同步，而漂掉的那一側不會有人發現——`zh-MO` 曾經就是漂掉的那一個。前綴比對本身也錯得
@@ -716,8 +677,8 @@ function isTraditionalChineseTarget(targetLang) {
 
 /**
  * §3.6 語碼是否為簡中變體（來源側）。走 `classifyZhVariant` + `zhVariantSatisfies`、**不自備
- * 語碼前綴表**——與目標側 `isTraditionalChineseTarget`、段級 `isAlreadyTargetLang`、頁面級
- * `detectPageLangIsZh` 收斂到同一組書寫變體定義。
+ * 語碼前綴表**——與目標側 `isTraditionalChineseTarget`、段級 `isAlreadyTargetLang` 收斂到
+ * 同一組書寫變體定義。
  *
  * **為什麼不留字串前綴表**：原本 `lang === "zh-cn" || lang.startsWith("zh-hans")` 兩頭都錯——
  * `zh-SG`／`zh-MY`（星馬華文用簡化字）、`zh_CN`（底線形，Apple locale identifier 形狀）、
@@ -762,8 +723,9 @@ function ownLangOf(el) {
  * 只覆蓋「自身 lang」與「祖先／頁面 lang」兩層；**依內容文字偵測語言尚未實作**，查不到 lang
  * 即回 null、呼叫端保守處理（不確定就不動原文）。
  *
- * 採集路徑不呼叫本函式——`walkAndLabel` 已把有效 lang 以下行增量寫進 `NodeLabel.lang`
- * （O(1)/段，同 region 的作法）；本函式是未進 labels 的防禦路徑與純函式測試用。
+ * 採集路徑只在**非 WALK 節點**上呼叫本函式（見 `langOfNode`）：`walkAndLabel` 的下行增量
+ * 只為 WALK 節點算過自身的 `lang`，而屬性段的宿主全是剪枝或不可分割的行內節點 ⇒ 那一類
+ * 每段付一次 `closest("[lang]")` 的 walk-up，不是 O(1)。WALK 節點仍走下行增量值。
  * @param {Element} el
  * @returns {string|null} 三態同 `ownLangOf`：`null`＝整條祖先鏈都沒有 `lang` 屬性；
  *   `""`＝最近帶 `lang` 的祖先其值為空（語言未知）；否則為該語碼（已小寫 trim）。
@@ -931,6 +893,9 @@ const SegmentState = Object.freeze({
  * @property {string} source
  * @property {object} anchor
  * @property {string} state
+ * @property {string|null} [lang]   // §3.6 採集期算的有效 lang（最近帶 lang 的祖先，含 <html>）。
+ *                                  // 送翻時當來源語的**回退**值——實際來源語由 native 端依內容
+ *                                  // 偵測，信心不足才用這欄。三態同 `ownLangOf`。
  * @property {'block'|'button'|'attribute'|'fragment'} [kind]   // §P4：button-class 窄判準命中時 = "button"、
  *                                       // 屬性文字段 = "attribute"、碎片段 = "fragment"
  *                                       //（皆為「段的種類」分類；插回行為看 anchor.insertMode、
@@ -1186,6 +1151,28 @@ function collectSegments(root, ctx, opts = {}) {
 	}
 
 	/**
+	 * §3.6 段的有效 lang：`walkAndLabel` 的下行增量值優先，其餘走 `effectiveLangOf` 的 walk-up。
+	 *
+	 * ⚠ **只有 WALK 節點的 `label.lang` 算過自身的 `lang` 屬性**：`walkAndLabel` 的
+	 * SKIP_SUBTREE 與 OPAQUE_INLINE 兩個分支存的是**繼承值**（原本的前提是那兩類節點的子孫
+	 * 永不成段、該欄沒有讀者）。而屬性段的宿主恰恰全在那兩類裡——`<img>`／`<input>`／
+	 * `<textarea>` 是 SKIP_SUBTREE、`<code>`／`<time>` 的 `title` 是 OPAQUE ⇒ 照採 `label.lang`
+	 * 會讓 `<img lang="en" alt="…">` 拿到頁面的 `lang`、宿主自己標的那個被丟掉。
+	 *
+	 * 三態原樣傳出去（`null`＝整條祖先鏈都沒有 `lang`、`""`＝最近的 `lang` 值為空＝語言未知）：
+	 * 把它們折成同一個值會讓「沒人標過」與「明講不知道」在送翻時變成同一件事，而 HTML 對
+	 * `lang=""` 的定義正是「不要繼承祖先」。
+	 * @param {Node} node
+	 * @returns {string|null}
+	 */
+	function langOfNode(node) {
+		const label = labels.get(node);
+		if (label && label.disp === "WALK") return label.lang; // 文字節點亦走這條（無 lang 屬性可言）
+		if (!node || node.nodeType !== NODE_ELEMENT) return label ? label.lang : null;
+		return effectiveLangOf(/** @type {Element} */ (node));
+	}
+
+	/**
 	 * §P4 KO-5 完整判準：標籤／role 命中 + 無 block 子（含自身、含各深度子代）+ 段落原文 ≤20 字 +
 	 * 只有純文字子代（防原地換字用 textContent 整個覆寫時，連帶砍掉 icon 等非文字元素子節點）。
 	 * @param {Node} blockNode
@@ -1237,8 +1224,7 @@ function collectSegments(root, ctx, opts = {}) {
 		if (el.tagName === "BODY" || el.tagName === "HTML") return "after-segment";
 		if (!isTraditionalChineseTarget(ctx.targetLang)) return "after-segment";
 		const label = labels.get(blockNode);
-		const lang = label ? label.lang : effectiveLangOf(el); // 未進 labels 才走防禦路徑
-		if (!isSimplifiedChinese(lang)) return "after-segment";
+		if (!isSimplifiedChinese(langOfNode(blockNode))) return "after-segment";
 		// **安全閘**：lang 常來自頁面級回退（`<html lang="zh-CN">`），簡中站內未標 lang 的
 		// 英文留言區、日文引用段都會落在同一個 lang 底下。就地取代是破壞性的（原文從頁面
 		// 消失、只剩 data 屬性），而「簡繁字面幾乎相同所以不必並排」的理由對這些段完全不成立。

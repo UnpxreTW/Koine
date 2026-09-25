@@ -24,7 +24,7 @@ function collectWith(bodyHtml, hostSel, shadowHtml) {
 	if (shadowHtml !== undefined) {
 		document.querySelector(hostSel).attachShadow({ mode: "open" }).innerHTML = shadowHtml;
 	}
-	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false });
+	const ctx = koine.makeContext({ getStyle: stubGetStyle });
 	return koine.collectSegments(document.body, ctx, { walkId: 1 });
 }
 

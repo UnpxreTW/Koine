@@ -97,7 +97,6 @@ export function runOnce(bodyHtml) {
 			computedStyleCalls++;
 			return stubGetStyle(el);
 		},
-		pageLangIsZh: false,
 	});
 
 	const t0 = performance.now();
@@ -121,7 +120,7 @@ export function runOnce(bodyHtml) {
 export function runSecondWalkOnce(bodyHtml) {
 	const { document } = parseHTML(`<!doctype html><html><body>${bodyHtml}</body></html>`);
 	globalThis.gc?.();
-	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false });
+	const ctx = koine.makeContext({ getStyle: stubGetStyle });
 
 	const first = koine.collectSegments(document.body, ctx, { walkId: 1 });
 	for (const s of first) {

@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // 跑道 A（純函式、不建 DOM）：§4.8 worthTranslating 的跳過理由表與 isFilenameOnly。
-// 共十種 reason，既有覆蓋只到 numeric（golden 07-worth-numeric-skip）與 already-target
-// （lang-detect.test.mjs），其餘八種與規則先後順序無人看守——任何一條退化只會讓段落多送
-// 或少送翻譯，現有測試照樣全綠。
-// already-target 沿用 lang-detect 既有斷言、本檔不重複，故此處釘的是另外九種。
+// 共九種 reason，既有覆蓋只到 numeric（golden 07-worth-numeric-skip），其餘八種與規則先後
+// 順序無人看守——任何一條退化只會讓段落多送或少送翻譯，現有測試照樣全綠。
 // 期望值一律取自現行實作的實測輸出（characterization），含「url 規則遮蔽多數 filename」
 // 這種非直覺的現況；本檔只記錄行為，不主張它應該如此。
 

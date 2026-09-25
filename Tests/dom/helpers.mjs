@@ -51,10 +51,7 @@ export function loadManifest() {
 }
 
 export function collect(document, opts = {}) {
-	const ctx = koine.makeContext({
-		getStyle: stubGetStyle,
-		pageLangIsZh: opts.pageLangIsZh ?? false,
-	});
+	const ctx = koine.makeContext({ getStyle: stubGetStyle });
 	return koine.collectSegments(document.body, ctx, { walkId: opts.walkId ?? 1 });
 }
 

@@ -57,7 +57,7 @@ private final class BridgeTranslatorTests {
 	/// 成功：`{id, source}` → `.translated`。
 	@Test
 	private func `success returns ID and text`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: false))
+		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: false), detector: FixedLanguageDetector())
 		let out = await translator.handle(["id": "k1-0", "source": "Hello", "from": "en", "to": "zh-Hant"])
 		#expect(out == .translated(identifier: "k1-0", text: "譯:Hello"))
 	}
@@ -65,7 +65,7 @@ private final class BridgeTranslatorTests {
 	/// 缺 id：回 `.unidentified`（無從對回、屬協定違規）。
 	@Test
 	private func `missing ID returns error`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: false))
+		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: false), detector: FixedLanguageDetector())
 		let out = await translator.handle(["source": "Hello"])
 		#expect(out == .unidentified(message: "missing id"))
 	}
@@ -73,7 +73,7 @@ private final class BridgeTranslatorTests {
 	/// 缺 source：回 `.failed`（保留 id 供 JS 端對回該段的失敗）。
 	@Test
 	private func `missing source returns ID and error`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: false))
+		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: false), detector: FixedLanguageDetector())
 		let out = await translator.handle(["id": "k1-0"])
 		#expect(out == .failed(identifier: "k1-0", message: "missing source"))
 	}
@@ -81,7 +81,7 @@ private final class BridgeTranslatorTests {
 	/// 引擎拋錯：回 `.failed`、帶引擎的錯誤描述。
 	@Test
 	private func `engine failure returns ID and error`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: true))
+		let translator: BridgeTranslator = .init(engine: MockEngine(shouldFail: true), detector: FixedLanguageDetector())
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
 		#expect(out == .failed(identifier: "k1-0", message: MockError.boom.localizedDescription))
 	}
@@ -89,7 +89,10 @@ private final class BridgeTranslatorTests {
 	/// 預查 supported（語言包未下載）：回 `.failed` 含可行動提示、不進 translate。
 	@Test
 	private func `status supported returns actionable error`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(statusResult: .supported))
+		let translator: BridgeTranslator = .init(
+			engine: MockEngine(statusResult: .supported),
+			detector: FixedLanguageDetector()
+		)
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
 		guard case .failed(let identifier, let message) = out else {
 			Issue.record("預查擋下時應回 .failed，實得 \(out)")
@@ -119,7 +122,10 @@ private final class BridgeTranslatorTests {
 	/// message so it cannot block translation` 一起紅。
 	@Test
 	private func `status undetermined falls through to translate`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(statusResult: .undetermined))
+		let translator: BridgeTranslator = .init(
+			engine: MockEngine(statusResult: .undetermined),
+			detector: FixedLanguageDetector()
+		)
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
 		#expect(out == .translated(identifier: "k1-0", text: "譯:Hello"), "查不出來不是失敗、不該擋下翻譯")
 	}
@@ -127,7 +133,7 @@ private final class BridgeTranslatorTests {
 	/// 不帶 from/to：走預設 en → zh-Hant、installed → `.translated`。
 	@Test
 	private func `default from to succeeds`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine())
+		let translator: BridgeTranslator = .init(engine: MockEngine(), detector: FixedLanguageDetector())
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
 		#expect(out == .translated(identifier: "k1-0", text: "譯:Hello"))
 	}
@@ -139,7 +145,7 @@ private final class BridgeTranslatorTests {
 	/// 看守那件事的是 `BridgeWireContractTests` 的 `parse fills in the default language tags`。
 	@Test
 	private func `typed request matches untyped entry`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine())
+		let translator: BridgeTranslator = .init(engine: MockEngine(), detector: FixedLanguageDetector())
 		let request: BridgeRequest = .init(
 			identifier: "k1-0",
 			source: "Hello",
@@ -152,7 +158,8 @@ private final class BridgeTranslatorTests {
 		#expect(typed == .translated(identifier: "k1-0", text: "譯:Hello"))
 	}
 
-	/// 語言標籤原樣進 `actionableMessage`：訊息裡印的是呼叫端送來的標籤、不是正規化後的值。
+	/// 語言標籤原樣進 `actionableMessage`：訊息裡印的是**實際採用的**那個標籤原字串、不是
+	/// 正規化後的值（本例的偵測器判不出來，實際採用的就是呼叫端送來的那個）。
 	/// 失去這條，`BridgeRequest` 若改存 `Locale.Language` 會讓提示印出使用者沒打過的字串。
 	///
 	/// 兩個標籤刻意選會被 ICU 改寫的形狀（`zh-hant` → `zh-TW`、`iw` → `he`，皆為 deprecated
@@ -160,7 +167,10 @@ private final class BridgeTranslatorTests {
 	/// 這條斷言就只是恆真。
 	@Test
 	private func `unsupported message echoes the caller tags`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(statusResult: .unsupported))
+		let translator: BridgeTranslator = .init(
+			engine: MockEngine(statusResult: .unsupported),
+			detector: FixedLanguageDetector()
+		)
 		let out = await translator.handle(["id": "k1-0", "source": "Hello", "from": "zh-hant", "to": "iw"])
 		guard case .failed(_, let message) = out else {
 			Issue.record("預查擋下時應回 .failed，實得 \(out)")
@@ -169,5 +179,26 @@ private final class BridgeTranslatorTests {
 		// 斷言取「兩個標籤相鄰」而非各自 contains：訊息尾端的示例清單也列了語言碼，
 		// 單獨 contains 一旦文案示例改成小寫就自動恆真；代入槽的形狀只有這裡湊得出來。
 		#expect(message.contains("zh-hant → iw"), "訊息應原樣印回呼叫端送來的標籤，不是 zh-TW → he")
+	}
+
+	/// 標籤被內容守門否決時，可行動訊息印的是**換過之後**的來源語。
+	///
+	/// 不支援的是真正送出去的那個組合；印回原始標記會讓使用者照著一個沒被嘗試過的組合去找
+	/// 語言包。沒有這條，把訊息的來源語改回原始標記不會有任何測試變色——其餘用例的兩者同值。
+	@Test
+	private func `actionable message reports the substituted source`() async {
+		let translator: BridgeTranslator = .init(
+			engine: MockEngine(statusResult: .unsupported),
+			detector: FixedLanguageDetector()
+		)
+		let out: BridgeResponse = await translator.handle([
+			"id": "k1-0", "source": "Download", "from": "zh-TW", "to": "zh-Hant",
+		])
+		guard case .failed(_, let message) = out else {
+			Issue.record("預查擋下時應回 .failed，實得 \(out)")
+			return
+		}
+		#expect(message.contains("en → zh-Hant"), "實得 \(message)")
+		#expect(!message.contains("zh-TW → zh-Hant"), "不該印出被否決的那個標籤，實得 \(message)")
 	}
 }

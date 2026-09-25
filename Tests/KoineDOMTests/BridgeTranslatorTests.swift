@@ -105,7 +105,10 @@ private final class BridgeTranslatorTests {
 	/// 預查 unsupported：回 `.failed` 含不支援提示、不進 translate。
 	@Test
 	private func `status unsupported returns actionable error`() async {
-		let translator: BridgeTranslator = .init(engine: MockEngine(statusResult: .unsupported))
+		let translator: BridgeTranslator = .init(
+			engine: MockEngine(statusResult: .unsupported),
+			detector: FixedLanguageDetector()
+		)
 		let out = await translator.handle(["id": "k1-0", "source": "Hello"])
 		guard case .failed(let identifier, let message) = out else {
 			Issue.record("預查擋下時應回 .failed，實得 \(out)")

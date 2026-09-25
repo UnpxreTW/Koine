@@ -1349,22 +1349,23 @@ function collectSegments(root, ctx, opts = {}) {
 		if (el.getAttribute(attributeTranslatedMark(attr)) === raw) return;
 		const source = normalizeSource(raw);
 		if (source === "") return;
-		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "attribute" });
+		const wt = worthTranslating(source, { unit: "attribute" });
 		const id = makeId(walkId, order);
 		const region = regionOfBlock(el);
 		// anchor.block 是 Element ⇒ observeSegments 的 observe 與 defaultMeasure 的 rect 量測
 		// 天生可用，屬性軸不需要另開一條排程路徑。refNode 只有並列插回會讀。
 		const anchor = { block: el, insertMode: "replace-attr", attr, refNode: null };
+		const lang = langOfNode(el);
 		if (!wt.worth) {
 			segments.push({
-				id, order, region, source, kind: "attribute", anchor,
+				id, order, region, source, lang, kind: "attribute", anchor,
 				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 			});
 			order++;
 			return;
 		}
 		segments.push({
-			id, order, region, source, kind: "attribute", anchor,
+			id, order, region, source, lang, kind: "attribute", anchor,
 			state: SegmentState.PENDING, meta: { replaceSnapshot: raw },
 		});
 		order++;
@@ -1399,11 +1400,13 @@ function collectSegments(root, ctx, opts = {}) {
 			? normalizeSourceWithMap(text)
 			: { source: normalizeSource(text), map: null };
 		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
-		const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh });
+		const wt = worthTranslating(source);
 		const region = regionOfBlock(blockNode);
+		const lang = langOfNode(blockNode);
 		if (!wt.worth) {
 			segments.push({
-				id: makeId(walkId, order), order, region, source, anchor: makeAnchor(buf, blockNode),
+				id: makeId(walkId, order), order, region, source, lang,
+				anchor: makeAnchor(buf, blockNode),
 				state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 			});
 			order++;
@@ -1414,15 +1417,15 @@ function collectSegments(root, ctx, opts = {}) {
 		const insertMode = decideInsertMode(blockNode, source, buttonClass);
 		// §9.2 碎片軸：整段成一段的路到此為止，改由 makeFragmentSegments 逐 text node 各產一段。
 		// 整段的 `source`／`spans` 在此之前已算過，但那是**這條分支的前置條件**、不是白算：
-		// `worthTranslating` 的九條判準（URL／email／已達標…）與 `decideInsertMode` 的漢字安全閘
+		// `worthTranslating` 的八條判準（URL／email／檔名…）與 `decideInsertMode` 的漢字安全閘
 		// 都問「這整段值不值得、該不該就地換字」，碎片化只在整段已通過之後才細分粒度。
 		if (insertMode === "replace-text") {
-			makeFragmentSegments(buf, blockNode, region);
+			makeFragmentSegments(buf, blockNode, region, lang);
 			return;
 		}
 		/** @type {Segment} */
 		const seg = {
-			id: makeId(walkId, order), order, region, source,
+			id: makeId(walkId, order), order, region, source, lang,
 			anchor: makeAnchor(buf, blockNode, insertMode), state: SegmentState.PENDING,
 		};
 		// §P4：button-class 是「段的種類」分類，保留供觀測／後續規則用；插回行為看 insertMode。
@@ -1456,8 +1459,9 @@ function collectSegments(root, ctx, opts = {}) {
 	 * @param {Node[]} buf
 	 * @param {Node} blockNode
 	 * @param {RegionValue} region  整段軸已算好的段 region，碎片共用（同一個 block、同一個區域）
+	 * @param {string|null} lang  整段軸已算好的有效 lang，供未進 labels 的 text node 回退
 	 */
-	function makeFragmentSegments(buf, blockNode, region) {
+	function makeFragmentSegments(buf, blockNode, region, lang) {
 		// 同一顆 block 的碎片共用一份結算計畫：render 端逐段被呼叫（translateSegment →
 		// insertTranslations([seg])），沒有這份跨呼叫的共用物件，「全有或全無」就只在批次呼叫
 		// 的測試裡成立，生產路徑上每次呼叫都只看得到一顆碎片、必然逐顆各寫各的。
@@ -1481,11 +1485,16 @@ function collectSegments(root, ctx, opts = {}) {
 			if (source === "") continue; // §6 / C2 同一條：純空白節點不產段（連 skipped 都不建）
 			// 極短門檻對碎片無效（unit）：`<p>看 <strong>這裡</strong> 吧</p>` 拆出來的「看」「吧」
 			// 是完整、使用者讀得到的字，套段落的門檻會把它們整批判掉、只剩中間那截被換字。
-			const wt = worthTranslating(source, { pageLangIsZh: ctx.pageLangIsZh, unit: "fragment" });
+			const wt = worthTranslating(source, { unit: "fragment" });
+			// 碎片的 lang 逐顆各算：同一顆 block 裡可能夾著 `<span lang="ja">`，而碎片軸的插回是
+			// 破壞性的就地換字，套 block 級的答案會連它一起換掉。未進 labels 的 text node（防禦
+			// 路徑）退回 block 級——那是碎片化之前就算好的同一顆 block 的有效 lang。
+			const fragmentLabel = labels.get(textNode);
+			const fragmentLang = fragmentLabel ? fragmentLabel.lang : lang;
 			const anchor = { block: blockNode, insertMode: "replace-text", textNode, refNode: textNode };
 			if (!wt.worth) {
 				segments.push({
-					id: makeId(walkId, order), order, region, source, anchor,
+					id: makeId(walkId, order), order, region, source, lang: fragmentLang, anchor,
 					state: SegmentState.SKIPPED, meta: { skipReason: wt.reason, charCount: source.length },
 				});
 				order++;
@@ -1496,7 +1505,7 @@ function collectSegments(root, ctx, opts = {}) {
 			anchor.fragmentGroup = group;
 			group.total++;
 			segments.push({
-				id: makeId(walkId, order), order, region, source, kind: "fragment", anchor,
+				id: makeId(walkId, order), order, region, source, lang: fragmentLang, kind: "fragment", anchor,
 				state: SegmentState.PENDING,
 				meta: { replaceSnapshot: raw, charCount: source.length },
 			});

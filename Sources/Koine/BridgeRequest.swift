@@ -15,8 +15,8 @@
 /// `Equatable` 供呼叫端與測試直接比值。
 public struct BridgeRequest: Equatable, Sendable {
 
-	/// 線上訊息缺 `from` 時採用的來源語標籤。content script 只在頁面帶 `lang` 屬性時送 `from`，
-	/// 沒有時就落到這個值。
+	/// 線上訊息缺 `from` 時採用的來源語標籤。content script 逐段送該段的有效 `lang`，段上沒有
+	/// 可用標記、且整頁取樣也判不出來時才會缺席，於是落到這個值。
 	///
 	/// 這兩個常數是**瀏覽器端的線上契約**、不是本型別的通用預設。故不 `public`、也不當 `init`
 	/// 的預設引數：擺上公開面就等於邀請其他呼叫端（例如 CLI）靜默繼承擴充的假設，而那正是

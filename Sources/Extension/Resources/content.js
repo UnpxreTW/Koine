@@ -2380,10 +2380,96 @@ function observeSegments(segments, opts) {
 // ============================================================================
 
 /**
+ * 取樣文字要有多少比例的漢字，才算「這頁是中文」。
+ *
+ * 0.3 取在「中文頁夾雜英文術語與程式碼」（實測仍遠高於此）與「英文頁掛一條中文語言切換連結」
+ * （遠低於此）之間；判準本身比門檻值重要，值本身是可調的。
+ */
+const PAGE_SAMPLE_HAN_RATIO = 0.3;
+
+/**
+ * 整份文件都沒有 `lang` 時的來源語回退值：取樣文字像中文就回目標語本身。
+ *
+ * 只分得出書寫系統、分不出簡繁，故給的是「假定這頁已經滿足目標語」這個強度——偵測器對信心
+ * 足夠的簡體段仍會翻案（那正是它的用處），信心不足時則至少不會拿一段中文去走英文→中文。
+ * 少了這條，缺 `lang` 的頁面會落到線上契約的預設來源語（英文），而「沒人標過語言」與
+ * 「標了英文」在協定上是同一個狀態、native 端分不出來。
+ *
+ * 判準取**漢字占比**、不是「有沒有漢字」：這個值會套到全頁每一個沒有標記的段上，而語言切換
+ * 連結（`English | 中文`）就足以讓一個純英文站命中——那會讓站上的短英文文案（`Login`／
+ * `Menu`）在偵測信心不足時被判成已達標而整批不翻。占比也比絕對字數合理：短頁面的五個漢字
+ * 與長頁面的五個漢字不是同一回事。
+ *
+ * ⚠ 占比判準對**取樣輸入的乾淨程度**很敏感：整份 `textContent` 會把 `<script>`／`<style>`
+ * 的原始碼一起算進去，`<body>` 開頭一段追蹤碼就足以把視窗灌滿非漢字、把中文頁稀釋到門檻
+ * 以下。故輸入由 `fallbackSourceLang` 自段的原文組出——採集器早已把那些標籤剪掉。
+ *
+ * 目標語非中文時一律不猜：取樣認得出的只有書寫系統，表達不了「這頁已經是日文」。
+ * @param {string} sample 取樣文字（呼叫端組出並截斷）
+ * @param {string} targetLang
+ * @returns {string|undefined}
+ */
+function sampledPageLang(sample, targetLang) {
+	if (!classifyZhVariant(targetLang)) return undefined;
+	if (RE_HAS_KANA.test(sample) || RE_HAS_HANGUL.test(sample)) return undefined;
+	let han = 0;
+	let visible = 0;
+	for (const c of sample) {
+		if (RE_WHITESPACE_ONLY.test(c)) continue; // 單一字元下即「這個字元是空白嗎」
+		visible++;
+		if (RE_HAS_HAN.test(c)) han++;
+	}
+	if (visible === 0) return undefined;
+	return han / visible >= PAGE_SAMPLE_HAN_RATIO ? targetLang : undefined;
+}
+
+/**
+ * 全頁共用的來源語回退值：只在真有段需要時才算，且只拿**那些段自己的原文**去取樣。
+ *
+ * 取樣輸入要濾掉兩種雜訊，少一種占比判準就失效：
+ *
+ * 1. **非文字內容**——故取段的原文、不取 `document.body.textContent`（後者含 `<script>`／
+ *    `<style>` 的原始碼，而那些標籤在 `SKIP_SUBTREE_TAGS` 內、根本不產段）。
+ * 2. **判掉的段**——URL／路徑／信箱／純數字依定義就是非漢字，對分母是單向貢獻，一排頁首
+ *    連結就能把一份中文頁稀釋到門檻以下。`from` 本來也只有 pending 的段讀得到。
+ *
+ * 附帶好處是標好 `lang` 的頁面連一次字串接合都不必付。
+ * @param {Segment[]} segments
+ * @param {string} targetLang
+ * @returns {string|undefined}
+ */
+function fallbackSourceLang(segments, targetLang) {
+	const unlabelled = segments.filter((seg) => !seg.lang && seg.state === SegmentState.PENDING);
+	if (!unlabelled.length) return undefined;
+	return sampledPageLang(unlabelled.map((seg) => seg.source).join(" ").slice(0, 500), targetLang);
+}
+
+/**
+ * 送翻時該帶哪個 `from`。
+ *
+ * 段自己的有效 lang 優先；**沒有可用的標記**時才用呼叫端給的回退值（`main()` 給的是取樣所得
+ * ——由內容導出、不是從祖先繼承來的，故拿它補在這裡不違反 `lang=""` 的「別繼承祖先」語義）。
+ *
+ * 兩種「沒有可用標記」一視同仁：`null`＝整條祖先鏈都沒標過、`""`＝最近的 `lang` 明講語言未知。
+ * 回 `undefined` 會讓線上契約補上預設來源語（英文），而「沒人標過」與「標了英文」在協定上是
+ * 同一個狀態、native 端分不出來——一段中文因此可能被拿去走英文→中文。
+ *
+ * @param {Segment} seg
+ * @param {string|undefined} fallback
+ * @returns {string|undefined}
+ */
+function sourceLangOf(seg, fallback) {
+	return seg.lang || fallback;
+}
+
+/**
  * 單段取譯：送 { id, source, from, to } 過 bridge → 回 { id, text } / { id, error } →
  * 落狀態機並在成功時插回。進場觀察的 onEnter 掛此函式（B 的鉤子由此接真 send）。
  * `send` 由呼叫端注入（瀏覽器走 background sendMessage、測試塞 fake）、回 Promise。
  * M1 不 retry（failed 即終態、記 meta.failReason）。
+ *
+ * `from` 送的是**這一段**的有效 lang（段上沒有可用標記時才用 `opts.from`，判準見 `sourceLangOf`），
+ * 且它只是回退值——來源語以 native 端的內容偵測為準。
  *
  * @param {Segment} seg
  * @param {(req: { id: string, source: string, from?: string, to?: string }) => Promise<any>} send
@@ -2395,7 +2481,7 @@ async function translateSegment(seg, send, opts = {}) {
 	seg.state = SegmentState.DRAFTING;
 	let res;
 	try {
-		res = await send({ id: seg.id, source: seg.source, from: opts.from, to: opts.to });
+		res = await send({ id: seg.id, source: seg.source, from: sourceLangOf(seg, opts.from), to: opts.to });
 	} catch (e) {
 		seg.state = SegmentState.FAILED;
 		seg.meta = Object.assign({}, seg.meta, { failReason: String(e) });
@@ -2430,18 +2516,13 @@ function buildBridgeMessage(req) {
 
 function main() {
 	console.log("[雅言] content script loaded");
-	const htmlLang = document.documentElement.getAttribute("lang");
-	// 無 lang 屬性才取樣（避免無謂 textContent 讀取）；純讀不觸發 reflow。
-	const sample = htmlLang ? "" : (document.body?.textContent || "").slice(0, 500);
-	// targetLang 先取出再一起傳：整頁級 gate 的判定與 ctx.targetLang 必須是同一個值。
-	const targetLang = DEFAULT_TARGET_LANG;
-	const ctx = makeContext({
-		targetLang,
-		pageLangIsZh: detectPageLangIsZh(htmlLang, sample, targetLang),
-	});
+	const ctx = makeContext({ targetLang: DEFAULT_TARGET_LANG });
 	const segments = collectSegments(document.body, ctx, { walkId: 1 });
 	if (!segments.length) return;
-	const from = htmlLang || undefined;
+	// 各段的 `from` 由自己的有效 lang 給（`walkAndLabel` 的下行增量已把 `<html lang>` 含在那條
+	// 祖先鏈裡），頁面語言因此是回退值、不是所有段共用的答案。這裡補的是**段上沒有可用標記**
+	// 的那些——整份文件都沒標，或最近的 `lang` 明講語言未知。
+	const from = fallbackSourceLang(segments, ctx.targetLang);
 	const send = (req) => browser.runtime.sendMessage(buildBridgeMessage(req));
 	observeSegments(segments, {
 		onEnter: (seg) => translateSegment(seg, send, { from, to: ctx.targetLang }),
@@ -2459,9 +2540,9 @@ if (typeof document !== "undefined" && typeof browser !== "undefined") {
 const __koineExports = {
 	FORCE_BLOCK_TAGS, SKIP_SUBTREE_TAGS, OPAQUE_INLINE_TAGS, ATTRIBUTE_TARGETS, SegmentState,
 	Region, EAGER_MAIN_BUDGET, BUTTON_CLASS_MAX_CHARS, DEFAULT_TARGET_LANG,
-	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly, detectPageLangIsZh,
+	isInlineDisplay, isTransparentDisplay, hasText, worthTranslating, isFilenameOnly,
 	classifyZhVariant, isAlreadyTargetLang, hasButtonRole, isButtonClassElement,
-	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf,
+	isTraditionalChineseTarget, isSimplifiedChinese, ownLangOf, effectiveLangOf, sampledPageLang, fallbackSourceLang,
 	attributeApplies, attributeOriginalMark, attributeTranslatedMark,
 	GLOBAL_ATTRIBUTE_TARGET,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,

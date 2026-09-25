@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // §3.6 / §4.9 classifyZhVariant 單元測試：中文書寫變體分類器的契約。
-// 這支分類器是 isAlreadyTargetLang 與 detectPageLangIsZh 共用的單一真相，故本檔分兩層：
+// 這支分類器是 isAlreadyTargetLang 與 isTraditionalChineseTarget 共用的單一真相，故本檔分兩層：
 // ①分類器自身的邊界；②兩個呼叫端在同一批語碼上的**絕對**期望值。
 //
 // 第②層的期望值一律寫成字面常數、不從分類器結果推導——推導式期望值會與實作一起漂移：
 // 把 zhVariantSatisfies 改成 `return true`（＝繁中目標吃下任何中文段，正是本檔要防的缺口）
-// 時，推導式斷言全綠、抓不到。各呼叫端自身的完整契約仍在 already-target-lang.test.mjs 與
-// lang-detect.test.mjs。
+// 時，推導式斷言全綠、抓不到。各呼叫端自身的完整契約仍在 already-target-lang.test.mjs。
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -46,7 +45,7 @@ test("只有裸 zh 是 'zh'（明確未指明書寫系統）", () => {
 
 test("認不出書寫系統的中文標籤 → unknown，不併進 'zh'", () => {
 	// 併進 'zh' 會讓「未指明 → 視為已達繁中目標」的豁免變成萬用桶，整頁不翻的缺口就換個
-	// 標籤形狀復活。以下每一個在修前的 detectPageLangIsZh 都是 false，不得因本次重構翻成 true。
+	// 標籤形狀復活。以下每一個在 isAlreadyTargetLang 都是 false，不得因本次重構翻成 true。
 	assert.equal(koine.classifyZhVariant("zh-CHS"), "unknown", ".NET 遺留簡體碼、非標準 script");
 	assert.equal(koine.classifyZhVariant("zh-CHT"), "unknown");
 	assert.equal(koine.classifyZhVariant("zh-XX"), "unknown", "未收錄的地區不猜");
@@ -73,63 +72,6 @@ test("空值與無效輸入 → null", () => {
 });
 
 // ── 呼叫端的絕對期望值（字面常數、不從分類器推導）────────────────────────────
-
-/** lang 屬性 → 繁中目標（預設）下 detectPageLangIsZh 的期望值。 */
-const PAGE_LANG_IS_ZH = [
-	["zh-Hant", true], ["zh-TW", true], ["zh-HK", true], ["zh-MO", true], ["zh", true],
-	["ZH-HANT-TW", true], ["zh_TW", true],
-	["zh-CN", false], ["zh-Hans", false], ["zh-Hans-CN", false], ["zh-Hans-MO", false],
-	["zh-SG", false], ["zh-cmn-Hans-CN", false],
-	["zh-CHS", false], ["zh-CHT", false], ["zh-XX", false], ["zh-Latn", false], ["zh-x-private", false],
-	["en", false], ["ja", false],
-];
-
-test("detectPageLangIsZh：整頁 lang 判定（絕對期望值）", () => {
-	for (const [tag, expected] of PAGE_LANG_IS_ZH) {
-		assert.equal(koine.detectPageLangIsZh(tag), expected, `detectPageLangIsZh("${tag}")`);
-	}
-});
-
-/**
- * lang 屬性 → 簡中目標下 detectPageLangIsZh 的期望值。
- * 與上表逐列相反的那幾格（繁中頁）正是「整頁級 gate 不看目標語」的失效模式：修前恆取上表答案，
- * 於是繁中頁配簡中目標時整頁判已達標、一段都不翻。
- */
-const PAGE_LANG_IS_ZH_FOR_HANS = [
-	["zh-Hans", true], ["zh-CN", true], ["zh-SG", true], ["zh-MY", true], ["zh-cmn-Hans-CN", true],
-	["zh-Hans-MO", true],
-	["zh-Hant", false], ["zh-TW", false], ["zh-HK", false], ["zh-MO", false],
-	["zh", false, "未指明書寫系統不足以斷定已是簡體"],
-	["zh-CHS", false], ["zh-Latn", false], ["zh-XX", false],
-	["en", false], ["ja", false],
-];
-
-/** 所有簡中目標語碼；判定粒度＝書寫系統，故它們對同一批 lang 必須給出同一組答案。 */
-const HANS_TARGETS = ["zh-Hans", "zh-CN", "zh-SG", "zh-Hans-CN"];
-
-test("detectPageLangIsZh：簡中目標下的整頁 lang 判定（絕對期望值）", () => {
-	for (const [tag, expected, why] of PAGE_LANG_IS_ZH_FOR_HANS) {
-		for (const target of HANS_TARGETS) {
-			assert.equal(
-				koine.detectPageLangIsZh(tag, "", target),
-				expected,
-				`lang=${tag} target=${target}${why ? `（${why}）` : ""}`,
-			);
-		}
-	}
-});
-
-test("detectPageLangIsZh：非中文目標關閉整頁級豁免（絕對期望值）", () => {
-	for (const [tag] of PAGE_LANG_IS_ZH) {
-		for (const target of ["ja", "en", "ko", "en-US"]) {
-			assert.equal(
-				koine.detectPageLangIsZh(tag, "", target),
-				false,
-				`lang=${tag} target=${target}`,
-			);
-		}
-	}
-});
 
 /** 元素 lang → 繁中目標下 isAlreadyTargetLang 的期望值。 */
 const ALREADY_TARGET_FOR_HANT = [

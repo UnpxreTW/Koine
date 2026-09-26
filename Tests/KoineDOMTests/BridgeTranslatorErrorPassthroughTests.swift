@@ -56,7 +56,7 @@ private final class BridgeTranslatorErrorPassthroughTests {
 	@Test
 	private func `timeout error reaches the wire error field`() async {
 		let error: TranslationTimeoutError = .init(limit: .seconds(30))
-		let translator: BridgeTranslator = .init(engine: FailingEngine(error: error))
+		let translator: BridgeTranslator = .init(engine: FailingEngine(error: error), detector: FixedLanguageDetector())
 		let out: BridgeResponse = await translator.handle(["id": "k1-0", "source": "Hello", "from": "en", "to": "zh-Hant"])
 		#expect(out == .failed(identifier: "k1-0", message: error.localizedDescription))
 		let payload: [String: Any] = out.payload
@@ -69,7 +69,7 @@ private final class BridgeTranslatorErrorPassthroughTests {
 	@Test
 	private func `circuit open error reaches the wire error field`() async {
 		let error: TranslationCircuitOpenError = .init(retryAfter: .seconds(60))
-		let translator: BridgeTranslator = .init(engine: FailingEngine(error: error))
+		let translator: BridgeTranslator = .init(engine: FailingEngine(error: error), detector: FixedLanguageDetector())
 		let out: BridgeResponse = await translator.handle(["id": "k1-0", "source": "Hello", "from": "en", "to": "zh-Hant"])
 		#expect(out == .failed(identifier: "k1-0", message: error.localizedDescription))
 		let payload: [String: Any] = out.payload
@@ -86,10 +86,12 @@ private final class BridgeTranslatorErrorPassthroughTests {
 	@Test
 	private func `the two errors stay distinguishable at the boundary`() async {
 		let timeout: BridgeTranslator = .init(
-			engine: FailingEngine(error: TranslationTimeoutError(limit: .seconds(30)))
+			engine: FailingEngine(error: TranslationTimeoutError(limit: .seconds(30))),
+			detector: FixedLanguageDetector()
 		)
 		let circuitOpen: BridgeTranslator = .init(
-			engine: FailingEngine(error: TranslationCircuitOpenError(retryAfter: .seconds(60)))
+			engine: FailingEngine(error: TranslationCircuitOpenError(retryAfter: .seconds(60))),
+			detector: FixedLanguageDetector()
 		)
 		let message: [String: Any] = ["id": "k1-0", "source": "Hello", "from": "en", "to": "zh-Hant"]
 		let timeoutOut: BridgeResponse = await timeout.handle(message)
@@ -101,7 +103,7 @@ private final class BridgeTranslatorErrorPassthroughTests {
 	@Test
 	private func `identifier survives an engine failure`() async {
 		let error: TranslationTimeoutError = .init(limit: .milliseconds(500))
-		let translator: BridgeTranslator = .init(engine: FailingEngine(error: error))
+		let translator: BridgeTranslator = .init(engine: FailingEngine(error: error), detector: FixedLanguageDetector())
 		let out: BridgeResponse = await translator.handle(["id": "k7-42", "source": "Hello", "from": "en", "to": "zh-Hant"])
 		#expect(out == .failed(identifier: "k7-42", message: error.localizedDescription))
 	}

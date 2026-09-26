@@ -19,7 +19,7 @@ function docFrom(bodyHtml, htmlAttrs = "") {
 
 /** 直接建 ctx（helpers.collect 不透 targetLang，語言對軸需要指定目標語）。 */
 function collectWith(doc, ctxOpts = {}) {
-	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false, ...ctxOpts });
+	const ctx = koine.makeContext({ getStyle: stubGetStyle, ...ctxOpts });
 	return koine.collectSegments(doc.body, ctx, { walkId: 1 });
 }
 

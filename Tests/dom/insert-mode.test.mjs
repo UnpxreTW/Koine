@@ -19,7 +19,7 @@ function docFrom(bodyHtml, htmlAttrs = "") {
 
 /** 直接建 ctx（helpers.collect 不透 targetLang，語言對軸需要指定目標語）。 */
 function collectWith(doc, ctxOpts = {}) {
-	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false, ...ctxOpts });
+	const ctx = koine.makeContext({ getStyle: stubGetStyle, ...ctxOpts });
 	return koine.collectSegments(doc.body, ctx, { walkId: 1 });
 }
 
@@ -281,7 +281,7 @@ test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻�
 	//
 	// 哪天真的支援了，本測試會紅——那時該連同這段說明一起改寫，而不是默默放寬。
 	const doc = docFrom(`<p>Hello there friend.</p>`);
-	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: false });
+	const ctx = koine.makeContext({ getStyle: stubGetStyle });
 	assert.equal(koine.collectSegments(doc, ctx, { walkId: 1 }).length, 0, "Document 為 root 回 0 段");
 
 	const frag = doc.createDocumentFragment();

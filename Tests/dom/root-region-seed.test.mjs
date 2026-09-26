@@ -7,7 +7,7 @@
 // 頁面 body 以外的子樹為 root 時，這條種子迴圈是 root 段落區域與語言的唯一來源。
 //
 // 既有測試一律自 document.body 收集，root 的祖先只剩 <html>（無 landmark／無 class-id hint、
-// lang 例外由 lang-detect／insert-mode 各測一路）——故種子迴圈的 landmark／hint 兩支、以及
+// lang 例外由 block-lang／insert-mode 各測一路）——故種子迴圈的 landmark／hint 兩支、以及
 // root 祖先鏈上 lang="" 的阻斷邊界，全數零覆蓋。2026-09-10 突變實測（基線 237 綠）：把 landmark
 // 種子改回 null、把 hint 種子改回 null、把 lang 種子的 `=== null` 改成 `!rootLang`（讓空字串
 // 也繼續上溯），三退化各自 0 fail。本檔對三支各釘一條直接錨。
@@ -22,9 +22,9 @@ import { koine, stubGetStyle } from "./helpers.mjs";
 const R = koine.Region;
 
 /** 自指定子樹 root（非 body）收段。 */
-function collectFrom(bodyHtml, rootSel, opts = {}) {
+function collectFrom(bodyHtml, rootSel) {
 	const { document } = parseHTML(`<!doctype html><html><body>${bodyHtml}</body></html>`);
-	const ctx = koine.makeContext({ getStyle: stubGetStyle, pageLangIsZh: opts.pageLangIsZh ?? false });
+	const ctx = koine.makeContext({ getStyle: stubGetStyle });
 	return koine.collectSegments(document.querySelector(rootSel), ctx, { walkId: 1 });
 }
 

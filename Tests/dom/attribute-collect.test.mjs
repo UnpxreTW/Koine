@@ -111,17 +111,18 @@ test("單字母屬性照譯——段落的極短門檻不套用在屬性上", ()
 	assert.equal(koine.worthTranslating("Q", { unit: "attribute" }).worth, true);
 });
 
-test("URL／純數字類屬性仍被判掉——其餘九條規則不分單位照套", () => {
+test("URL／純數字類屬性仍被判掉——其餘八條規則不分單位照套", () => {
 	const doc = docFrom(`<img alt="https://example.com/a.png"><input type="submit" value="2026">`);
 	const segs = attrSegs(collect(doc));
 	assert.deepEqual(segs.map((s) => s.state), [koine.SegmentState.SKIPPED, koine.SegmentState.SKIPPED]);
 	assert.deepEqual(segs.map((s) => s.meta.skipReason), ["url", "numeric"]);
 });
 
-test("整頁已是目標語時中文屬性判 already-target", () => {
-	const segs = attrSegs(collect(docFrom(`<img alt="一隻睡著的貓">`), { pageLangIsZh: true }));
+test("中文屬性照樣送得出去——已達標與否由 native 端依內容判，不在採集期", () => {
+	const segs = attrSegs(collect(docFrom(`<img alt="一隻睡著的貓">`)));
 	assert.equal(segs.length, 1);
-	assert.equal(segs[0].meta.skipReason, "already-target");
+	assert.equal(segs[0].state, koine.SegmentState.PENDING);
+	assert.equal(segs[0].meta.skipReason, undefined);
 });
 
 // ---------------------------------------------------------------------------

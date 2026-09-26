@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // 跑道 A（linkedom）：makeContext 未給 getStyle 時的預設樣式讀取（§8 的 WeakMap 快取）。
-// 既有測試一律經 helpers.mjs 的 stubGetStyle 注入，預設那條從未執行——lang-detect.test.mjs
-// 的五處 makeContext 呼叫皆未帶 getStyle，但都沒有呼叫過 ctx.getStyle。本檔以 getComputedStyle
+// 既有測試一律經 helpers.mjs 的 stubGetStyle 注入，預設那條從未執行——少數不帶 getStyle 的
+// makeContext 呼叫（純函式測試）都沒有呼叫過 ctx.getStyle。本檔以 getComputedStyle
 // 替身驅動預設路徑，斷言三欄投影、一元素一次的快取、快取的鍵與共享，期望值取自現行實作實跑。
 
 import { test } from "node:test";

@@ -177,6 +177,24 @@ private let driverJS = """
 	})();
 	"""
 
+/// 兩根對照 driver：同一份文件先後以 `document.body` 與 `document.documentElement` 為採集根，
+/// 各回 normalize 後的段（欄位同 `driverJS`），供頁面根身分豁免的 root 不變式斷言。
+private let rootPairDriverJS: String = """
+	(() => {
+	  const k = globalThis.__koine__;
+	  const norm = (segs) => segs.map((s) => {
+	    const o = { order: s.order, source: s.source, state: s.state };
+	    if (s.meta && s.meta.skipReason) o.skipReason = s.meta.skipReason;
+	    if (s.meta && s.meta.protectedSpans) o.protectedSpans = s.meta.protectedSpans;
+	    return o;
+	  });
+	  const run = (root) => norm(
+	    k.collectSegments(root, k.makeContext({ targetLang: 'zh-Hant' }), { walkId: 1 }),
+	  );
+	  return JSON.stringify({ viaBody: run(document.body), viaHTML: run(document.documentElement) });
+	})();
+	"""
+
 /// render driver：採集 → 對 pending 段塞假 draft（前綴標記）並轉 `drafted` → `insertTranslations`
 /// 插回 → 以新 `walkId` 二次採集；回各階段計數（JSON）供自吞往返斷言（§7.1）。
 private let renderDriverJS = """
@@ -294,6 +312,18 @@ private struct InsertModeSeg: Decodable {
 
 	/// 段的種類分類（`button` 或 nil）。
 	let kind: String?
+}
+
+// MARK: - RootPair
+
+/// 兩種採集根（`document.body` / `document.documentElement`）在同一份文件上的採集結果。
+private struct RootPair: Decodable {
+
+	/// 以 `document.body` 為根採到的段。
+	fileprivate let viaBody: [NormSeg]
+
+	/// 以 `document.documentElement` 為根採到的段。
+	fileprivate let viaHTML: [NormSeg]
 }
 
 // MARK: - LangPairRender
@@ -459,6 +489,48 @@ private final class CollectWebKitTests {
 			"Framework mislabel, still translated.",
 			"Second paragraph also translated.",
 		])
+	}
+
+	/// §3.6 頁面根的 `lang` 在真 WebKit：`<html lang>`／`<body lang>` 同為目標語時照常採集，
+	/// 且兩種採集根同輸出。
+	///
+	/// 為什麼要在真引擎再釘一次：判準是節點身分（`ownerDocument.documentElement` /
+	/// `.body`），而 `document.body` 是由 HTML 剖析器指派的——DOM 模擬器與真引擎在這一點上
+	/// 各有各的實作。另外真引擎才有 `<head>` 的預設樣式，`<html>` 為根時整條 head 子樹必須
+	/// 照舊不採；模擬器的 stub 樣式表達不了這件事。
+	@Test
+	private func `page level lang does not prune in real WebKit`() async throws {
+		let html: String = "<html lang=\"zh-TW\"><body lang=\"zh-TW\">"
+			+ "<p>An English paragraph on a declared Chinese page.</p>"
+			+ "<p lang=\"zh-TW\">這一段標了目標語、應照元素級閘跳過。</p></body></html>"
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		await load(webView, html: html)
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+		let json: String = try await webView.evaluateJavaScript(rootPairDriverJS) as? String ?? "{}"
+		let pair: RootPair = try JSONDecoder().decode(RootPair.self, from: Data(json.utf8))
+		#expect(pair.viaBody.count == 1, "頁面根的 lang 宣告不得讓整頁歸零")
+		#expect(pair.viaBody.first?.source == "An English paragraph on a declared Chinese page.")
+		#expect(pair.viaHTML == pair.viaBody, "documentElement 為根應與 body 為根同輸出")
+	}
+
+	/// §3.5 頁面根的 `translate="no"` 在真 WebKit：`<html>` 為採集根時同樣降級不尊重。
+	///
+	/// 既有的 `body level translate no still collects in real WebKit` 只驗 `<body>` 為根那一形。
+	/// 這條補 `<html>` 為根——`el.translate` IDL 的繼承只在真引擎發生。實作刻意不吃那個 IDL，
+	/// 這條就是防它哪天被悄悄吃進來：真吃進去的話，`<html translate="no">` 會讓整份文件一段
+	/// 都採不到。
+	@Test
+	private func `page level translate no does not prune in real WebKit`() async throws {
+		let html: String = "<html translate=\"no\"><body translate=\"no\">"
+			+ "<p>Framework mislabel, still translated.</p>"
+			+ "<p>Second paragraph also translated.</p></body></html>"
+		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
+		await load(webView, html: html)
+		_ = try await webView.evaluateJavaScript(Source.contentJS())
+		let json: String = try await webView.evaluateJavaScript(rootPairDriverJS) as? String ?? "{}"
+		let pair: RootPair = try JSONDecoder().decode(RootPair.self, from: Data(json.utf8))
+		#expect(pair.viaBody.count == 2)
+		#expect(pair.viaHTML == pair.viaBody, "documentElement 為根應與 body 為根同輸出")
 	}
 
 	/// §9.2 語言對軸在真 WebKit：`<html lang="zh-CN">` 下，簡中段就地取代、同頁英文段並列。

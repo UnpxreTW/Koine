@@ -145,6 +145,10 @@ function attributeTranslatedMark(attr) {
  * BODY 之所以必須留著：它是 collectSegments 的預設 root，`walkAndLabel` 會分類 root 自身，
  * root 落 SKIP_SUBTREE 就整棵不採（見 collectSegments 尾端的 root 閘）——`<body translate="no">`
  * 的頁面會一段都採不到。
+ *
+ * ⚠ 這張表只認 tagName。頁面根（`<html>` / `<body>`）另由 `isPageLevelElement` 以身分豁免，
+ * 兩者並存：表管的是「哪些標籤算大容器」，身分管的是「這顆節點是不是這份文件的根」——
+ * `<html>` 不在表內、採集根往上移到它時只有身分那條攔得住。
  */
 const BULK_TRANSLATE_NO_TAGS = new Set(["BODY"]);
 
@@ -552,7 +556,10 @@ function classifyNode(node, ctx) {
 
 	// [8] lang 自身為目標語（不繼承）。帶 cause：這條 skip 的理由是「不必翻」而非「不該外送」，
 	// OPAQUE 子樹併字要據此區分（見 opaqueTextOf）。
-	if (isAlreadyTargetLang(el, ctx.targetLang)) {
+	// 頁面根（`<html>` / `<body>`）豁免：它們身上的 lang 是整份文件的宣告、是下行語言種子，
+	// 不是「這一塊不必翻」的訊號（見 isPageLevelElement）。比對順序是先問 lang、命中才付身分比對，
+	// 於是沒有 lang 屬性的元素零增量。
+	if (isAlreadyTargetLang(el, ctx.targetLang) && !isPageLevelElement(el)) {
 		return { disp: "SKIP_SUBTREE", cs: null, cause: SKIP_CAUSE_ALREADY_TARGET };
 	}
 
@@ -613,6 +620,25 @@ function hasSkipClass(el) {
 	return el.classList.contains("sr-only") || el.classList.contains("visually-hidden");
 }
 
+/**
+ * §3.5 / §3.6 頁面根身分：該元素是不是它自己那份文件的 `<html>` 或 `<body>`。
+ *
+ * 判身分、不判 tagName：手搭而未掛進任何文件的 `<body>` 元素不是頁面根，它身上的 `lang` 與
+ * `translate` 與一般容器同義。掛在頁面根上的這兩個屬性是整份文件的宣告——`lang` 是下行語言
+ * 種子、`translate="no"` 多半是框架把整站標成不翻——都不該被當成「這一塊不採」的剪枝訊號，
+ * 否則 `<body lang="zh-TW">` 這類寫法會讓整頁一段都採不到，而 `<html>` 為採集根時同樣歸零。
+ *
+ * ⚠ 與本檔另一處的「頁面級回退」（沿祖先鏈取 `<html lang>` 當語言回退值）不是同一件事：
+ * 那條講語言值怎麼取，這條只判節點身分、不產生任何值。
+ *
+ * @param {Element} el
+ * @returns {boolean}
+ */
+function isPageLevelElement(el) {
+	const doc = el.ownerDocument;
+	return !!doc && (el === doc.documentElement || el === doc.body);
+}
+
 /** §3.5 translate="no" / .notranslate，大容器降級不尊重。 */
 function respectsTranslateNo(el) {
 	// 只看元素自身明示訊號（attribute / class）；不用 el.translate IDL——該屬性會繼承
@@ -622,7 +648,7 @@ function respectsTranslateNo(el) {
 	const no = el.getAttribute("translate") === "no"
 		|| el.classList.contains("notranslate");
 	if (!no) return false;
-	return !BULK_TRANSLATE_NO_TAGS.has(el.tagName);
+	return !BULK_TRANSLATE_NO_TAGS.has(el.tagName) && !isPageLevelElement(el);
 }
 
 /**
@@ -1316,6 +1342,10 @@ function collectSegments(root, ctx, opts = {}) {
 			// 在此重跑只是白付一次 getStyle 與一輪屬性讀取。**唯獨 [8] 要補**：OPAQUE 的 return
 			// 排在 [8] 之前（見 opaqueSelfSkips 的註解），`<code lang="zh-TW" title="…">` 的自身
 			// lang 從未被評估過。
+			//
+			// 屬性軸刻意不套 isPageLevelElement 的身分豁免：`collect` 只採子代的 title、從不採
+			// 採集根自身的，所以頁面根一旦豁免，`<body title>` 會在 `<html>` 為根時成段、在
+			// `<body>` 為根時不成段——反而把兩種採集根的輸出拆開。這裡不是漏套身分豁免，是刻意不套。
 			if (isAlreadyTargetLang(el, ctx.targetLang)) return;
 		} else {
 			// 這批標籤在 classifyNode [2] 的標籤黑名單就返回了，[1]／[5]／[6]／[8]／[9] 五道**自身**

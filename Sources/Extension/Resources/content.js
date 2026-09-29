@@ -2276,7 +2276,10 @@ function defaultMakeObserver(cb, options) {
  * 瀏覽器預設段距視窗量測：block 距視窗邊緣的 px（0 = 相交）。
  * 只在 priorityGate 的 throttled re-bucket 批次讀呼叫、不進採集/分類路徑（§8 讀寫分離不破）。
  * 跑道 A（linkedom）由 opts.measure 注入 stub。
- * @param {Element} block
+ *
+ * 收的是**觀察目標**（見 resolveObserveTarget），多數情形即 anchor 的 block 自身；沒有可觀察
+ * 代理的容器會原樣傳進來，量不到 rect ⇒ 回 0＝當作與視窗相交，與那類段「立即入列」一致。
+ * @param {Element|Node} block
  * @returns {number}
  */
 function defaultMeasure(block) {
@@ -2311,7 +2314,7 @@ function defaultMeasure(block) {
  *   onEnter: (seg: Segment) => (void | Promise<void>),
  *   maxInFlight?: number,
  *   makeObserver?: (cb: Function, options: object) => { observe: Function, unobserve: Function, disconnect?: Function },
- *   measure?: (block: Element) => number,
+ *   measure?: (block: Element | Node) => number,
  *   eagerBudget?: number,
  *   rootMargin?: string,        // 覆寫兩層（相容舊單層呼叫）
  *   mainRootMargin?: string,

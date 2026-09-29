@@ -166,6 +166,21 @@ test("C4 ShadowRoot 為根：shadow 內節點的 lang／region 與宿主為根�
 	assert.equal(viaShadow.region, koine.Region.CHROME, "宿主在 <nav> 內 ⇒ 繼承 chrome");
 });
 
+test("C4b ShadowRoot 為根：容器錨的段與同棵樹內元素錨的段 region 同值（皆取宿主所在區）", () => {
+	// 容器錨的段（頂層裸文字 run）其 `anchor.block` 是 shadow root 本身、不是 Element。
+	// 段 region 若在讀 label 之前先被 nodeType 守衛短路，同一棵 shadow 內的兩段會落在相反的區，
+	// 而 region 決定進場觀察的 tier 與 eager 預算的分配。
+	const doc = docFrom(`<nav><div id="host"></div></nav>`, ` lang="en"`);
+	const root = attachShadow(doc, `Shadow bare words here <i>inline</i><p>Shadow para here now.</p>`);
+	const segs = collectFrom(root);
+
+	assert.equal(segs.length, 2);
+	assertSame(segs[0].anchor.block, root, "前提：第一段的錨要是容器本身，否則本例沒測到容器錨");
+	assert.equal(segs[0].region, segs[1].region, "同一棵 shadow 內的兩段 region 不得相反");
+	assert.equal(segs[0].region, koine.Region.CHROME, "宿主在 <nav> 內 ⇒ 容器錨的段也是 chrome");
+	assert.equal(segs[1].region, koine.Region.CHROME, "元素錨的段同樣是 chrome（對照組）");
+});
+
 // ---------------------------------------------------------------------------
 // C5 / C6：插回參考點解析
 // ---------------------------------------------------------------------------

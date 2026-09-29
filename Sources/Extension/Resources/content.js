@@ -1615,10 +1615,10 @@ function collectSegments(root, ctx, opts = {}) {
 	// true ⇒ button-class 窄判準永遠不命中，該段的 `insertMode` 因此也跟著不同。再加上 root
 	// 自身的處置被吃掉——後者正是本閘要補的。）
 	//
-	// 容器根本來擋著的兩個風險都已各自解掉、不再是本閘的理由：①頁面級的剪枝豁免原本掛在
+	// 容器根本來擋著的兩個風險都已各自解掉、不再是本閘的理由：① 頁面級的剪枝豁免原本掛在
 	// `<body>` 的標籤上，往上移到 `<html>` 會讓 `<html lang="zh-TW">`／`<html class="notranslate">`
 	// 這類主流寫法整份文件歸零——現由 `isPageLevelElement` 以**身分**豁免（§3.5／§3.6），三種根同
-	// 輸出；②容器頂層裸文字／inline 的非 Element anchor——現由上述兩支解析器承接。
+	// 輸出；② 容器頂層裸文字／inline 的非 Element anchor——現由上述兩支解析器承接。
 	//
 	// 仍屬另案的是「第二遍走訪主動進 `el.shadowRoot`」（§5 C3）：本閘只保證 shadow 樹**當根**時
 	// 管線是通的，不代表以 `<body>` 為根時採得到 shadow 內的文字（見 childNodes）。

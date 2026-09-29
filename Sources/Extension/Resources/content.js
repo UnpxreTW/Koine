@@ -1206,8 +1206,8 @@ function collectSegments(root, ctx, opts = {}) {
 	function regionOfBlock(blockNode) {
 		if (!blockNode) return Region.MAIN;
 		// 已算好的 region 先讀、再落 nodeType 守衛：容器錨（`ShadowRoot`／`DocumentFragment`）
-		// 的段也在 `labels` 内，它那一筆的 region 由種子（`ShadowRoot.host` 上溯）算出，是正解。
-		// 守衛擺前面會讓非 Element 的容器錨一律短路成 MAIN，與同一棵樹内元素錨的段 region 相反。
+		// 的段也在 `labels` 內，它那一筆的 region 由種子（`ShadowRoot.host` 上溯）算出，是正解。
+		// 守衛擺前面會讓非 Element 的容器錨一律短路成 MAIN，與同一棵樹內元素錨的段 region 相反。
 		const label = labels.get(blockNode);
 		if (label && label.region) return label.region;
 		// 守衛留在這裡：無 landmark 的容器落 §6.5 的保守 MAIN，且永不進 `heuristicRegion`

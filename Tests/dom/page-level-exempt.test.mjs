@@ -11,7 +11,8 @@
 //
 // 判準是**身分**不是 tagName：手搭而未掛進文件的 `<body>` 元素不是頁面根，不豁免。
 //
-// 本檔不碰採集根閘（Document／DocumentFragment 仍一律 0 段，見 insert-mode.test.mjs）。
+// 本檔只管頁面根的身分豁免；容器節點（Document／DocumentFragment／ShadowRoot）當採集根的
+// 行為見 container-root.test.mjs。
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

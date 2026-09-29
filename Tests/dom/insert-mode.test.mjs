@@ -264,46 +264,35 @@ test("壞掉的 refined 不得蓋掉好的 draft：refined ?? draft 是 refined 
 	assert.ok(!b.hasAttribute("data-koine-translated"), "沒寫成功就不得標記已譯");
 });
 
-test("採集 root 限 Element：Document／DocumentFragment 一律 0 段（刻意不支援、非疏漏）", () => {
-	// 這條釘的是**範圍限制本身**。逐 commit 實測過：採集 root 閘加入前這兩種容器採得到段，
-	// 而且**頂層是 block 元素時整條管線是通的**（段在該 block 上成形、anchor.block 是 Element、
-	// 譯文真的插得回去）。收窄的理由不是「完全不能用」，是**同一支 API 兩種結果**：容器頂層
-	// 直接掛裸文字或 inline 時，段在容器上成形、anchor.block 就是容器本身（非 Element），
-	// insertTranslations 的 block.after 不存在而靜默跳過（段已送翻、譯文丟失無警訊），
-	// 或 observeSegments 的 observe(block) 在真 IntersectionObserver 下丟 TypeError 並中止整條
-	// 管線——落哪一個取決於該容器 block 上的段是否全部被 eager 預算涵蓋而免於觀察，也就是隨段的
-	// 文件序落點而變。
-	// <template>.content 與 range.cloneContents() 頂層帶裸文字正是常態形狀。
-	//
-	// 要真正支援容器 root，得先解掉兩個既有風險（兩者在 root 閘之前就存在）：①頁面級剪枝
-	// 豁免掛在 <body> 上，choke point 往上移到 <html> 會讓 <html lang="zh-TW"> 這類主流寫法
-	// 整份文件歸零；②容器頂層裸文字／inline 的非 Element anchor。屬另案。
-	//
-	// 哪天真的支援了，本測試會紅——那時該連同這段說明一起改寫，而不是默默放寬。
+test("採集 root 收元素與容器：四種 root 同一份內容各採 1 段（邊界的正面形，細節見 container-root）", () => {
+	// 這條原本釘的是「容器 root 一律 0 段」——那是收窄期的刻意契約，理由是容器頂層裸文字會在
+	// 容器上成段、而下游兩個 consumer 當時只吃 Element（插回靜默丟失、observe 丟 TypeError）。
+	// 兩個理由現在都沒了：頁面根的剪枝豁免改以身分判定（見 page-level-exempt），插回與觀察各有
+	// 解析步（見 resolveInsertRef / resolveObserveTarget）。**本檔只留邊界的正面形**——容器 root
+	// 的完整行為（anchor 形狀、插回落點、觀察目標、自吞）在 container-root.test.mjs。
 	const doc = docFrom(`<p>Hello there friend.</p>`);
 	const ctx = koine.makeContext({ getStyle: stubGetStyle });
-	assert.equal(koine.collectSegments(doc, ctx, { walkId: 1 }).length, 0, "Document 為 root 回 0 段");
+	// 四種 root 刻意共用同一份 doc／同一顆節點，這樣段數相同的唯一解釋就是 root 型別不影響結果。
+	assert.equal(koine.collectSegments(doc, ctx, { walkId: 1 }).length, 1, "Document 為 root → 1 段");
+	assert.equal(
+		koine.collectSegments(doc.documentElement, ctx, { walkId: 1 }).length, 1,
+		"documentElement 為 root → 1 段（<html> 那層沒被判 SKIP）",
+	);
+	assert.equal(koine.collectSegments(doc.body, ctx, { walkId: 1 }).length, 1, "body 為 root → 1 段");
+	assert.equal(
+		koine.collectSegments(doc.querySelector("p"), ctx, { walkId: 1 }).length, 1,
+		"同一顆 p（Element）為 root → 1 段",
+	);
 
 	const frag = doc.createDocumentFragment();
 	const p = doc.createElement("p");
 	p.textContent = "Fragment paragraph here.";
 	frag.appendChild(p);
-	assert.equal(koine.collectSegments(frag, ctx, { walkId: 1 }).length, 0, "DocumentFragment 為 root 回 0 段");
-
-	// 對照組刻意只差 root 型別、其餘全同（各配對內同一份 doc／同一顆節點），這樣 0 段的唯一
-	// 解釋就是 root 型別。documentElement 那條特別重要：少了它，「0 段其實出在 <html> 這層被
-	// 判 SKIP」這個競爭解釋還活著。
+	// DocumentFragment 是接受但無保證的那一級：跑道 A 注入 stub getStyle 才有產出，真引擎下
+	// 未連接元素的 computed display 為空字串、§5 [9] 會整批剪掉（見 CollectWebKitTests）。
 	assert.equal(
-		koine.collectSegments(doc.documentElement, ctx, { walkId: 1 }).length, 1,
-		"同一份 doc 改以 documentElement（Element）為 root → 1 段（<html> 那層沒被判 SKIP）",
-	);
-	assert.equal(
-		koine.collectSegments(doc.body, ctx, { walkId: 1 }).length, 1,
-		"同一份 doc 改以 body（Element）為 root → 1 段",
-	);
-	assert.equal(
-		koine.collectSegments(p, ctx, { walkId: 1 }).length, 1,
-		"同一顆 p（Element）為 root → 1 段",
+		koine.collectSegments(frag, ctx, { walkId: 1 }).length, 1,
+		"DocumentFragment 為 root（跑道 A 注入 getStyle）→ 1 段",
 	);
 });
 

@@ -165,6 +165,33 @@ const NODE_ELEMENT = 1;
 const NODE_TEXT = 3;
 const NODE_PI = 7;
 const NODE_COMMENT = 8;
+const NODE_DOCUMENT = 9;
+const NODE_DOCUMENT_FRAGMENT = 11; // DocumentFragment 與 ShadowRoot 共用此值
+
+/**
+ * 採集根可以是「容器節點」——`Document`、`DocumentFragment`、`ShadowRoot`（後兩者 nodeType 同為 11）。
+ *
+ * 容器沒有標籤、沒有屬性、沒有 computed style，於是 §5 的自身訊號（`translate="no"`／`hidden`／
+ * 自身 `lang`／`display`）對它一條都不適用——它只是一個裝子節點的殼。走訪因此直接下行，剪枝
+ * 全由子代自己的訊號決定。
+ * @param {Node} node
+ * @returns {boolean}
+ */
+function isContainerNode(node) {
+	return !!node && (node.nodeType === NODE_DOCUMENT || node.nodeType === NODE_DOCUMENT_FRAGMENT);
+}
+
+/**
+ * 容器節點的觀察／插回代理元素：`ShadowRoot` 用它的 `host`（宿主在文件裡、量得到距離也觀察得到），
+ * 其餘容器沒有代理（`Document` 的代理就是整份文件、`DocumentFragment` 根本不在文件裡）。
+ * @param {Node} node
+ * @returns {Element|null}
+ */
+function containerHostOf(node) {
+	if (!isContainerNode(node)) return null;
+	const host = /** @type {any} */ (node).host;
+	return host && host.nodeType === NODE_ELEMENT ? /** @type {Element} */ (host) : null;
+}
 
 // ============================================================================
 // §P4 button-class 窄判準（KO-5）：BUTTON／LABEL／role=button，
@@ -482,6 +509,10 @@ function classifyNode(node, ctx) {
 	if (node.nodeType === NODE_COMMENT || node.nodeType === NODE_PI) {
 		return { disp: "SKIP_SUBTREE", cs: null };
 	}
+	// 容器節點（`Document`／`DocumentFragment`／`ShadowRoot`）一律下行：它沒有標籤與屬性，
+	// 底下每一條剪枝訊號都掛在子代自己身上（見 isContainerNode）。這條讓容器可以當採集根，
+	// 也讓 §6 的 collect 在容器頂層裸文字上成段（anchor 的處置見 makeAnchor 與 §9.2 插回）。
+	if (isContainerNode(node)) return { disp: "WALK", cs: null };
 	if (node.nodeType !== NODE_ELEMENT) return { disp: "SKIP_SUBTREE", cs: null };
 
 	const el = /** @type {Element} */ (node);
@@ -974,7 +1005,7 @@ function* childNodes(node) {
 
 /**
  * 第一遍：標籤 + forceBlock 上傳 + 算 hasBlockDescendant + region landmark/hint 下行增量（§6.5）。
- * @param {Element} root  同 collectSegments：必須是 Element
+ * @param {Element|Document|DocumentFragment} root  同 collectSegments：元素或容器節點
  * @param {CollectContext} ctx
  * @returns {WeakMap<Node, NodeLabel>}
  */
@@ -991,7 +1022,12 @@ function walkAndLabel(root, ctx) {
 	/** @type {string|null} */
 	let rootLang = null;
 	const rootEl = /** @type {Element} */ (root);
-	for (let n = rootEl.parentElement; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
+	// 容器根沒有 `parentElement`，但 ShadowRoot 有宿主：自 `host` **含自身**起上溯，shadow 內的段
+	// 因此沿用宿主的有效 lang 與 region——與第一遍走訪進 `el.shadowRoot` 時傳下去的值同一個答案
+	// （見 visit 的 shadowRoot 分支），也才讓「同一棵 shadow 樹換個根重採」拿到相同標記。
+	// `Document`／`DocumentFragment` 無宿主 ⇒ 無種子，`lang`／`region` 由子代自己的屬性決定。
+	const seedStart = rootEl.parentElement || containerHostOf(root);
+	for (let n = seedStart; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
 		if (!rootLandmark) rootLandmark = landmarkRegionOf(n);
 		if (!rootHint) rootHint = regionHintOf(n);
 		if (rootLang === null) rootLang = ownLangOf(n); // "" 也算找到（語言未知）、停止上溯
@@ -1091,10 +1127,10 @@ function isShallowBlock(el, cs) {
 
 /**
  * 第二遍：用 labels 組翻譯單位（consecutiveInline 累積、block 邊界 flush）。
- * @param {Element} root  **必須是 Element**：Document / DocumentFragment 一律回 0 段（見尾端 root 閘）。
- *   ⚠ 這是**文件約定，跨門面不強制**——本檔內的呼叫端 tsc 檢查得到（`checkJs` + `strict`），
- *   但跑道 A 一律經 helpers 的 `koine` 門面取用、而該門面標成 `any`，型別檢查在那裡就斷了。
- *   別以為改了本行，外部呼叫端就有守衛。
+ * @param {Element|Document|DocumentFragment} root  元素或容器節點（`Document`／`DocumentFragment`／
+ *   `ShadowRoot`）。容器根的保證面見尾端 root 閘：`Document` 與連接態 `ShadowRoot` 全程可用；
+ *   detached 的 `DocumentFragment` 接受但無保證（其元素在真引擎下 computed display 為空字串、
+ *   §5 [9] 會整批剪掉，只剩頂層裸文字）。
  * @param {CollectContext} ctx
  * @param {{ walkId?: number }} [opts]
  * @returns {Segment[]}
@@ -1168,10 +1204,16 @@ function collectSegments(root, ctx, opts = {}) {
 	 * @returns {RegionValue}
 	 */
 	function regionOfBlock(blockNode) {
-		if (!blockNode || blockNode.nodeType !== NODE_ELEMENT) return Region.MAIN;
-		const el = /** @type {Element} */ (blockNode);
+		if (!blockNode) return Region.MAIN;
+		// 已算好的 region 先讀、再落 nodeType 守衛：容器錨（`ShadowRoot`／`DocumentFragment`）
+		// 的段也在 `labels` 內，它那一筆的 region 由種子（`ShadowRoot.host` 上溯）算出，是正解。
+		// 守衛擺前面會讓非 Element 的容器錨一律短路成 MAIN，與同一棵樹內元素錨的段 region 相反。
 		const label = labels.get(blockNode);
 		if (label && label.region) return label.region;
+		// 守衛留在這裡：無 landmark 的容器落 §6.5 的保守 MAIN，且永不進 `heuristicRegion`
+		// （那裡讀 `el.textContent` 與連結密度，容器上量不到有意義的值）。
+		if (blockNode.nodeType !== NODE_ELEMENT) return Region.MAIN;
+		const el = /** @type {Element} */ (blockNode);
 		if (label) return heuristicRegion(el, label.regionHint);
 		return classifyRegion(el); // 不在 labels（防禦路徑）→ 完整 walk-up cascade
 	}
@@ -1550,22 +1592,17 @@ function collectSegments(root, ctx, opts = {}) {
 	// 被靜默吃掉。生產路徑 root 恆為 `<body>`（且 BODY 在 §3.5 降級集合裡）故現況不變，
 	// 但以**元素**子樹為 root 呼叫（動態重採）時這是必要的。
 	//
-	// ⚠ 範圍限制：`root` 必須是 Element。傳 Document / DocumentFragment 一律回 0 段
-	// （`classifyNode` 對非元素回 SKIP_SUBTREE、此閘據以整棵不採）。
+	// ⚠ 範圍：`root` 可以是元素，也可以是容器節點（`Document`／`DocumentFragment`／`ShadowRoot`）。
+	// 容器根經 `classifyNode` 的容器分支落 WALK，此閘因而放行；容器頂層直接掛裸文字或 inline 時，
+	// 段就在容器上成形、`anchor.block` 是容器本身（非 Element）。**下游兩個 consumer 都有對應的
+	// 解析步**：`insertTranslations` 以 `resolveInsertRef` 退到段末節點插回，`observeSegments` 以
+	// `resolveObserveTarget` 退到 `ShadowRoot.host`、無代理者不觀察而直接入列。兩者皆不再靜默
+	// 丟譯文、也不再把非 Element 餵進 `observe()`（WebIDL 簽名只收 `Element`、真引擎會丟 TypeError）。
 	//
-	// **這是相對本閘加入前的刻意收窄，不是「維持原狀」。** 加閘前這兩種 root 採得到段，
-	// 但那條路的產出**不一致**：容器頂層若是 block 元素，段在該 block 上成形（`anchor.block`
-	// 是 Element）、整條管線是通的；容器頂層若直接掛裸文字或 inline，段就在容器上成形、
-	// `anchor.block` 是容器本身（非 Element）。而下游兩個 consumer 都只吃 Element——
-	// `insertTranslations` 的 `block.after` 不存在時靜默 `continue`（段已送翻、譯文丟失無警訊），
-	// `observeSegments` 的 `obs.observe(block)` 在真 IntersectionObserver 下丟 TypeError
-	// （WebIDL 簽名收 `Element`）。**兩者實際落哪一個，取決於該容器 block 上的段是否**全部**被
-	// §10.1 的 eager 預算涵蓋而免於觀察**（免觀察的閘是 `segs.every(...enqueued)`——同一個 block
-	// 掛多段時只要有一段沒被涵蓋就會走到 `observe`；`observeSegments` 跑在 `insertTranslations`
-	// 之前，丟出就整條管線中止）
-	// ——即同一份輸入的結果會隨段的文件序落點而變。`<template>.content` 與
-	// `range.cloneContents()` 頂層帶裸文字正是常態形狀。把「部分可用、行為隨落點而變」換成
-	// 「明確不支援」，比留著一個看運氣的入口好。
+	// 保證面分三級：`Document` 與 body 根同輸出（root-invariance，由測試逐 fixture 釘住）；
+	// 連接態 `ShadowRoot` 全程可用（種子取 host、觀察取 host、插回落在 shadow 樹內）；
+	// detached 的 `DocumentFragment`（`<template>.content`）接受但**無保證**——真引擎對未連接節點的
+	// computed display 回空字串，§5 [9] 會把它的元素整批剪掉、只剩頂層裸文字，且它永遠不與視窗相交。
 	//
 	// （順帶更正兩個容易寫錯的因果，逐項實測過：①子代不在 `labels` **不等於**剪枝失效——
 	// 它們改走 `classifyLabel` 重算、`disp` 原樣保留，document root 下 `<head>`／`<script>`／
@@ -1578,11 +1615,13 @@ function collectSegments(root, ctx, opts = {}) {
 	// true ⇒ button-class 窄判準永遠不命中，該段的 `insertMode` 因此也跟著不同。再加上 root
 	// 自身的處置被吃掉——後者正是本閘要補的。）
 	//
-	// 要真正支援容器 root，得先解掉兩個**既有**風險（兩者在本閘加入前就存在、非本閘造成）：
-	// ①頁面級的剪枝豁免掛在 `<body>` 上（§3.5 把 BODY 放進降級集合正是為此），choke point 一旦
-	// 往上移到 `<html>`，`<html lang="zh-TW">`／`<html class="notranslate">` 這類主流寫法會讓整份
-	// 文件歸零——同一份 HTML 走 body-root 正常、走 document-root 零段；②容器頂層裸文字／inline
-	// 的非 Element anchor（見上）。屬另案。
+	// 容器根本來擋著的兩個風險都已各自解掉、不再是本閘的理由：① 頁面級的剪枝豁免原本掛在
+	// `<body>` 的標籤上，往上移到 `<html>` 會讓 `<html lang="zh-TW">`／`<html class="notranslate">`
+	// 這類主流寫法整份文件歸零——現由 `isPageLevelElement` 以**身分**豁免（§3.5／§3.6），三種根同
+	// 輸出；② 容器頂層裸文字／inline 的非 Element anchor——現由上述兩支解析器承接。
+	//
+	// 仍屬另案的是「第二遍走訪主動進 `el.shadowRoot`」（§5 C3）：本閘只保證 shadow 樹**當根**時
+	// 管線是通的，不代表以 `<body>` 為根時採得到 shadow 內的文字（見 childNodes）。
 	if (labelOf(root).disp === "WALK") collect(root);
 	return segments;
 }
@@ -1602,6 +1641,49 @@ function makeId(walkId, order) {
  */
 function makeAnchor(buf, blockNode, insertMode = "after-segment") {
 	return { block: blockNode || null, insertMode, refNode: buf[buf.length - 1] };
+}
+
+/**
+ * §9.2 並列插回的參考節點：譯文 wrapper 要落在**誰**後面。
+ *
+ * 元素 anchor 一律回 block 自身（既有行為、一字未改）。容器 anchor（`Document`／
+ * `DocumentFragment`／`ShadowRoot`）沒有 `after()`——`ChildNode.after` 是子節點介面，容器不是
+ * 任何人的子節點——改回段末節點（`anchor.refNode`，`Text` 與 `Element` 都有 `after()`）。
+ * 段末節點正是這段原文在容器頂層的最後一顆節點，wrapper 落在它之後＝落在整段原文之後，
+ * 與元素 anchor 的視覺結果相同（譯文接在原文下方）。
+ *
+ * `contains` 守衛擋的是「採集與插回之間站台把那顆節點搬走了」：容器 anchor 沒有別的落點可退
+ * （元素 anchor 至少還有 block 自己的位置），錯位插回會把譯文丟到不相干的地方。守不住就回
+ * `null`、由呼叫端放棄本次插回，下一輪採集重來。
+ * @param {Node} block
+ * @param {{ refNode?: Node }} anchor
+ * @returns {Node|null}
+ */
+function resolveInsertRef(block, anchor) {
+	if (!block) return null;
+	if (typeof /** @type {any} */ (block).after === "function") return block;
+	const ref = anchor && anchor.refNode;
+	if (!ref || typeof /** @type {any} */ (ref).after !== "function") return null;
+	if (typeof /** @type {any} */ (block).contains !== "function") return null;
+	return /** @type {any} */ (block).contains(ref) ? ref : null;
+}
+
+/**
+ * §10.1 觀察目標：這顆 anchor 要拿**哪個元素**去問 IntersectionObserver「進場了沒」。
+ *
+ * 元素 anchor 回自身。`ShadowRoot` 回宿主元素——宿主在文件裡、進場時機與 shadow 內的內容一致。
+ * 其餘容器回 `null`＝沒有可觀察的代理，呼叫端據此改為立即入列（不觀察）：detached 容器永遠
+ * 不與視窗相交，等 IO 等於永遠不翻。
+ *
+ * **只有容器走特例**：非容器的 block 一律原樣回，手搭 segment（測試與防禦路徑，`block` 可能是
+ * 任意物件）因此與改動前行為逐字相同——這裡要縮的是容器，不是順便替既有呼叫端加型別檢查。
+ * @param {Node} block
+ * @returns {Element|null}
+ */
+function resolveObserveTarget(block) {
+	if (!block) return null;
+	if (isContainerNode(block)) return containerHostOf(block);
+	return /** @type {Element} */ (block);
 }
 
 // ============================================================================
@@ -2093,8 +2175,15 @@ function insertTranslations(segments, opts = {}) {
 			continue;
 		}
 
-		if (typeof block.after !== "function") continue;
-		const doc = block.ownerDocument;
+		// 插回參考點：元素 anchor 就是它自己，容器 anchor 退到段末節點（見 resolveInsertRef）。
+		// 解析不出來＝這段的落點已經不可信，放棄插回並留一則警訊——舊版在這裡是靜默 `continue`，
+		// 段已經送翻、譯文卻無聲丟失，查起來只看得到「有些段就是沒出現」。
+		const ref = resolveInsertRef(block, seg.anchor);
+		if (!ref) {
+			console.warn("[雅言] 段的插回參考點已失效、略過本次插回", seg.id);
+			continue;
+		}
+		const doc = ref.ownerDocument;
 		if (!doc) continue;
 		// 這一段上一輪走原地換字、這一輪落到並列插回：站台把文字換成新內容後重新採集，而新原文
 		// 不再符合原地換字判準（按鈕軸超過 BUTTON_CLASS_MAX_CHARS 是最常見的一種），
@@ -2111,7 +2200,7 @@ function insertTranslations(segments, opts = {}) {
 		wrapper.setAttribute("data-koine-id", seg.id);
 		wrapper.className = "koine-translated";
 		wrapper.textContent = text;
-		block.after(wrapper);
+		ref.after(wrapper);
 		inserted.push(wrapper);
 	}
 
@@ -2193,7 +2282,10 @@ function defaultMakeObserver(cb, options) {
  * 瀏覽器預設段距視窗量測：block 距視窗邊緣的 px（0 = 相交）。
  * 只在 priorityGate 的 throttled re-bucket 批次讀呼叫、不進採集/分類路徑（§8 讀寫分離不破）。
  * 跑道 A（linkedom）由 opts.measure 注入 stub。
- * @param {Element} block
+ *
+ * 收的是**觀察目標**（見 resolveObserveTarget），多數情形即 anchor 的 block 自身；沒有可觀察
+ * 代理的容器會原樣傳進來，量不到 rect ⇒ 回 0＝當作與視窗相交，與那類段「立即入列」一致。
+ * @param {Element|Node} block
  * @returns {number}
  */
 function defaultMeasure(block) {
@@ -2219,15 +2311,16 @@ function defaultMeasure(block) {
  * - 併發閘門 maxInFlight（預設 6）不變（§10 D3，on-device 硬約束；真閘門是 daemon ~3 段/秒）。
  *
  * 只做「排程 + 閘門 + 呼鉤子」、不碰 bridge——`onEnter` 由呼叫端注入（C 接 native bridge、
- * 測試塞 fake）。只排 `pending` 段（skipped / drafted / 無 block 跳過）；每個 block 只
- * observe 一次（多段共用同一 block 時進場一併入列）。
+ * 測試塞 fake）。只排 `pending` 段（skipped / drafted / 無 block 跳過）；每個**觀察目標**只
+ * observe 一次（多段共用同一目標時進場一併入列）。觀察目標由 `resolveObserveTarget` 給：
+ * 元素 anchor 是它自己、`ShadowRoot` anchor 是宿主元素、其餘容器沒有目標 ⇒ 不觀察、直接入列。
  *
  * @param {Segment[]} segments
  * @param {{
  *   onEnter: (seg: Segment) => (void | Promise<void>),
  *   maxInFlight?: number,
  *   makeObserver?: (cb: Function, options: object) => { observe: Function, unobserve: Function, disconnect?: Function },
- *   measure?: (block: Element) => number,
+ *   measure?: (block: Element | Node) => number,
  *   eagerBudget?: number,
  *   rootMargin?: string,        // 覆寫兩層（相容舊單層呼叫）
  *   mainRootMargin?: string,
@@ -2247,9 +2340,15 @@ function observeSegments(segments, opts) {
 	const measure = opts.measure || defaultMeasure;
 	const eagerBudget = opts.eagerBudget ?? EAGER_MAIN_BUDGET;
 
-	// block → 該 block 綁的 pending 段（多段共用同一 block 時進場一併入列）。
+	// 觀察目標 → 綁在該目標上的 pending 段（多段共用同一目標時進場一併入列）。
+	// 鍵是**觀察目標**而非 anchor.block：容器 anchor 的 block 沒有 `observe()` 收得下的身分，
+	// ShadowRoot 用宿主元素代理（見 resolveObserveTarget）；同一顆宿主上的 light DOM 段與 shadow
+	// 頂層段因此共用同一次進場觸發——它們在畫面上本來就是同一個位置。
 	/** @type {Map<Element, Segment[]>} */
-	const blockToSegs = new Map();
+	const targetToSegs = new Map();
+	/** 沒有可觀察代理的段（detached 容器）：不進 IO、eager 之後直接入列。
+	 * @type {Segment[]} */
+	const unobservable = [];
 	/** @type {Segment[]} */
 	const pendings = [];
 	for (const seg of segments) {
@@ -2257,8 +2356,10 @@ function observeSegments(segments, opts) {
 		const block = seg.anchor && seg.anchor.block;
 		if (!block) continue;
 		pendings.push(seg);
-		let arr = blockToSegs.get(block);
-		if (!arr) { arr = []; blockToSegs.set(block, arr); }
+		const target = resolveObserveTarget(block);
+		if (!target) { unobservable.push(seg); continue; }
+		let arr = targetToSegs.get(target);
+		if (!arr) { arr = []; targetToSegs.set(target, arr); }
 		arr.push(seg);
 	}
 
@@ -2274,7 +2375,10 @@ function observeSegments(segments, opts) {
 
 	/** sortKey = (viewportBand, regionRank, distanceBucket, order)（§10.2、dequeue 最小）。 */
 	function keyOf(seg) {
-		const d = Number(measure(seg.anchor && seg.anchor.block)) || 0;
+		// 量的是觀察目標（容器 anchor 量它的宿主）；無代理者量不到、`defaultMeasure` 回 0＝當作
+		// 與視窗相交，與「立即入列」的處置一致。
+		const block = seg.anchor && seg.anchor.block;
+		const d = Number(measure(resolveObserveTarget(block) || block)) || 0;
 		const band = d <= 0 ? 0 : 1;                                  // 0 = 與視窗相交、壓過一切
 		const rank = seg.region === Region.CHROME ? 1 : 0;            // offscreen 時 region 壓過 distance
 		const bucket = d <= 0 ? 0 : Math.floor(d / DISTANCE_BUCKET_PX);
@@ -2356,17 +2460,20 @@ function observeSegments(segments, opts) {
 	};
 	/** @type {{ main: Element[], chrome: Element[] }} */
 	const tierBlocks = { main: [], chrome: [] };
-	for (const [block, segs] of blockToSegs) {
+	for (const [target, segs] of targetToSegs) {
 		if (segs.every((s) => enqueuedSet.has(s))) continue; // 全 eager → 免觀察
-		tierBlocks[segs[0].region === Region.CHROME ? "chrome" : "main"].push(block);
+		tierBlocks[segs[0].region === Region.CHROME ? "chrome" : "main"].push(target);
 	}
+	// 無代理可觀察的段：eager 預算之後補進佇列。不排＝永遠不翻（detached 容器不會進場），
+	// 立即入列＝當作在視窗內；兩者之中只有後者譯得出來。
+	for (const seg of unobservable) enqueue(seg);
 	const ioCallback = (entries, obs) => {
 		if (disconnected) return;
 		let added = false;
 		for (const entry of entries) {
 			if (!entry.isIntersecting) continue;
 			obs.unobserve(entry.target); // 進場即 unobserve：一次性、不重複觸發
-			const segs = blockToSegs.get(entry.target);
+			const segs = targetToSegs.get(entry.target);
 			if (!segs) continue;
 			for (const seg of segs) {
 				if (enqueuedSet.has(seg)) continue;
@@ -2576,6 +2683,7 @@ const __koineExports = {
 	attributeApplies, attributeOriginalMark, attributeTranslatedMark,
 	GLOBAL_ATTRIBUTE_TARGET,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
+	isContainerNode, resolveInsertRef, resolveObserveTarget,
 	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,
 };

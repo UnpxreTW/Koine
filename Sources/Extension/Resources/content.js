@@ -980,6 +980,71 @@ const SegmentState = Object.freeze({
  */
 
 // ============================================================================
+// §P5 純連結 run 拆單元：導覽列那種「一個 block 裡並排幾個短連結」的形狀
+// ============================================================================
+
+/**
+ * 一個 flush 出來的 buffer 若**只由連結與分隔物組成**，就不該合成一段。
+ *
+ * 導覽列常寫成 `<p><a>Blog</a><br><a>Archives</a><br><a>Tag Cloud</a></p>`——四個獨立的
+ * 導覽項在同一個 block 裡並排。整段採集會把它們併成一段送翻，譯文只能以一個 wrapper 掛在
+ * `<p>` 之後：四個連結的譯文變成一整條不可點的文字，與原本一項一個連結的形狀對不上。
+ *
+ * 拆單元＝每個 `<a>` 各自成為一段、各自當自己的 anchor。短連結因此走得到就地換字
+ * （`<a>` 與 `href` 都保留、仍可點），長連結退回並列而 wrapper 逐個掛在自己的連結後面。
+ *
+ * **只在整個 run 都是連結時才拆**：prose 裡的連結（`<p>Click <a>this link</a> here.</p>`）
+ * 一拆就把一句話切成三截、語序與上下文全壞，那正是碎片軸刻意不做的事。判準因此是
+ * 「除了連結，其餘節點都只是分隔物」——`<br>`、純空白，以及 `·`／`|`／`&middot;` 這類
+ * 只有標點與符號的文字節點（沿用 §4 的 `RE_PUNCT_ONLY`，不另立一套標點集）。
+ *
+ * **至少兩個有實質文字的連結才拆**。單一連結的 block（`<li><a>…</a></li>`）拆了段數不變，唯一
+ * 差別是 anchor 從 block 換成 `<a>`——那會改動既有頁面的插回落點，而好處只在導覽列那種語境才
+ * 成立。那條路要的是「`<nav>` 內單一連結」這個額外條件，與本函式的「run 形狀」判準不同源，另案。
+ *
+ * 「有實質文字」這個限定不是修飾語而是門檻本身：無文字的 `<a>`（jump target `<a id="top"></a>`、
+ * 只包 icon 的 `<a><img></a>`）產不出段，把它算進 ≥2 等於讓上一段那條排除項被繞過。
+ *
+ * ⚠ **「有沒有實質文字」必須與 `makeSegmentFromBuffer` 走同一條路**（`extractText` ＋
+ * `normalizeSource`），不可圖快改用 `el.textContent`：無障礙 icon 最常見的寫法是把文字藏在
+ * 會被 §3 濾掉的子樹裡（`<a><span class="sr-only">RSS</span></a>`、
+ * `<a><svg><title>X</title></svg></a>`、`aria-hidden`／`translate="no"` 包裝），這類連結
+ * `textContent` 非空而 `source` 為空。兩條路一漂開，上一段那道保護對它們就整條失效：只有一個
+ * 真連結的 block 照樣被拆，anchor 由 block 漂到 `<a>`、插回模式跟著由並列變成破壞性的就地換字。
+ * @param {Node[]} buf  flush 當下的 buffer（文件序）
+ * @param {((node: Node) => NodeLabel)} [labelOf]  走訪層算好的 label 查詢函式。
+ *   **採集路徑一律要傳**——沒有它，下面的 `extractText` 取不到 §3 的過濾結果，門檻就退化成
+ *   `textContent`（見上方 ⚠）。省略只保留給「單獨拿這支工具函式問判準」的呼叫端。
+ * @returns {Element[]|null}  拆出的連結（≥2 且各自有實質文字），不該拆則 null
+ */
+function pureLinkRunLinks(buf, labelOf) {
+	/** @type {Element[]} */
+	const candidates = [];
+	for (const n of buf) {
+		if (n.nodeType === NODE_TEXT) {
+			const v = n.nodeValue || "";
+			if (v === "" || RE_PUNCT_ONLY.test(v)) continue; // 空白／標點＝分隔物
+			return null;                                    // 任何實質文字 ⇒ 這是 prose、不拆
+		}
+		if (n.nodeType !== NODE_ELEMENT) return null;
+		const el = /** @type {Element} */ (n);
+		if (el.tagName === "A") { candidates.push(el); continue; }
+		if (el.tagName === "BR") continue;                  // §6.2 的換行＝分隔物
+		return null;                                        // 其餘元素（`<code>`／`<span>`…）⇒ 不拆
+	}
+	// 形狀先判、文字後算：prose 與混了其他元素的 run 在上面就回 null，不必為它們各走一趟子樹
+	// （每個候選的 `extractText` 之後在 `makeSegmentFromBuffer` 還會再走一次，這裡只算真的要拆的）。
+	if (candidates.length < 2) return null;
+	// 無實質文字的連結視同分隔物（與 `<br>` 同級）：它在 `makeSegmentFromBuffer` 會因
+	// `source === ""` 早退、成不了段，計進門檻只會讓「單一連結的 block 不拆」失效。
+	const links = candidates.filter((el) => {
+		const src = normalizeSource(extractText([el], labelOf).text);
+		return src !== "" && !RE_PUNCT_ONLY.test(src);
+	});
+	return links.length >= 2 ? links : null;
+}
+
+// ============================================================================
 // §6 採集演算法（兩遍 walk + buffer flush）
 // ============================================================================
 
@@ -1243,13 +1308,18 @@ function collectSegments(root, ctx, opts = {}) {
 	/**
 	 * §P4 KO-5 完整判準：標籤／role 命中 + 無 block 子（含自身、含各深度子代）+ 段落原文 ≤20 字 +
 	 * 只有純文字子代（防原地換字用 textContent 整個覆寫時，連帶砍掉 icon 等非文字元素子節點）。
+	 *
+	 * `linkUnit` 是 §P5 拆出來的連結單元：它以**所在位置**取代標籤／role 那道閘——一個只由連結
+	 * 組成的 run 裡，每個連結就是一個獨立的導覽項，與按鈕同類。**其餘三道閘一條都不放**：長度、
+	 * 無 block 子、只有純文字子代照樣要過，過不了就照常退回並列。
 	 * @param {Node} blockNode
 	 * @param {string} source  已 normalize 的段落原文（此段的翻譯來源文字）
+	 * @param {{ linkUnit?: boolean }} [opts]
 	 * @returns {boolean}
 	 */
-	function isButtonClassCandidate(blockNode, source) {
+	function isButtonClassCandidate(blockNode, source, opts = {}) {
 		if (!blockNode || blockNode.nodeType !== NODE_ELEMENT) return false;
-		if (!isButtonClassElement(/** @type {Element} */ (blockNode))) return false;
+		if (!opts.linkUnit && !isButtonClassElement(/** @type {Element} */ (blockNode))) return false;
 		if (source.length > BUTTON_CLASS_MAX_CHARS) return false;
 		if (!hasOnlyTextChildren(/** @type {Element} */ (blockNode))) return false;
 		const label = labels.get(blockNode);
@@ -1311,7 +1381,21 @@ function collectSegments(root, ctx, opts = {}) {
 		/** @type {Node[]} */
 		let buffer = [];
 		const flushHere = () => {
-			if (buffer.length) makeSegmentFromBuffer(buffer, node);
+			if (buffer.length) {
+				// §P5：整個 run 都是連結時逐連結各成一段（anchor 換成該 `<a>`），否則照舊整段一段。
+				const links = pureLinkRunLinks(buffer, labelOf);
+				if (links) {
+					// region 沿用所在 block 的值、不讓拆出的單元自己重算：`heuristicRegion` 的
+					// 連結密度算的是**子代**連結（`block.querySelectorAll("a")`），anchor 本身就是
+					// `<a>` 時 linkLen 恆為 0 ⇒ 導覽列賴以判 CHROME 的那道訊號永不觸發，region 會
+					// 由 CHROME 翻成 MAIN、rootMargin 與 eager 預算跟著錯層（導覽列搶在正文之前
+					// 取譯）。拆單元是同一個 block 的細分、畫面位置沒變，region 本該與拆前同值。
+					const region = regionOfBlock(node);
+					for (const a of links) makeSegmentFromBuffer([a], a, { linkUnit: true, region });
+				} else {
+					makeSegmentFromBuffer(buffer, node);
+				}
+			}
 			buffer = [];
 		};
 		for (const [child, label] of effectiveChildren(node)) {
@@ -1462,7 +1546,14 @@ function collectSegments(root, ctx, opts = {}) {
 		}
 	}
 
-	function makeSegmentFromBuffer(buf, blockNode) {
+	/**
+	 * 把一段 buffer 結算成 Segment。
+	 * @param {Node[]} buf
+	 * @param {Node} blockNode
+	 * @param {{ linkUnit?: boolean, region?: RegionValue }} [opts]  §P5 拆出的連結單元
+	 *   （`linkUnit` 見 isButtonClassCandidate；`region` 由呼叫端給定，用於沿用所在 block 的值）
+	 */
+	function makeSegmentFromBuffer(buf, blockNode, opts = {}) {
 		const { text, spans } = extractText(buf, labelOf);
 		// spans 的位移必須跟著 `source` 走（見 remapSpansToSource），故有 span 的段才要索引對照表；
 		// 沒有 span 的段不為此配置陣列。（有 span 但走下面任一條早退的段仍會白配置一次——純空白段
@@ -1473,7 +1564,7 @@ function collectSegments(root, ctx, opts = {}) {
 			: { source: normalizeSource(text), map: null };
 		if (source === "") return; // §6 / C2：純空白間隔不產段（連 skipped 都不建）
 		const wt = worthTranslating(source);
-		const region = regionOfBlock(blockNode);
+		const region = opts.region ?? regionOfBlock(blockNode);
 		const lang = langOfNode(blockNode);
 		if (!wt.worth) {
 			segments.push({
@@ -1485,7 +1576,7 @@ function collectSegments(root, ctx, opts = {}) {
 			return;
 		}
 		// §9.2：插回模式在採集期決定（render 只認 anchor.insertMode、不再各自判斷觸發條件）。
-		const buttonClass = isButtonClassCandidate(blockNode, source);
+		const buttonClass = isButtonClassCandidate(blockNode, source, opts);
 		const insertMode = decideInsertMode(blockNode, source, buttonClass);
 		// §9.2 碎片軸：整段成一段的路到此為止，改由 makeFragmentSegments 逐 text node 各產一段。
 		// 整段的 `source`／`spans` 在此之前已算過，但那是**這條分支的前置條件**、不是白算：
@@ -2683,7 +2774,7 @@ const __koineExports = {
 	attributeApplies, attributeOriginalMark, attributeTranslatedMark,
 	GLOBAL_ATTRIBUTE_TARGET,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
-	isContainerNode, resolveInsertRef, resolveObserveTarget,
+	isContainerNode, resolveInsertRef, resolveObserveTarget, pureLinkRunLinks,
 	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,
 };

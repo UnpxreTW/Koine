@@ -89,7 +89,11 @@ test("無 landmark heuristic 訊號①：class/id regex（含祖先最近 hint�
 });
 
 test("無 landmark heuristic 訊號②：link-density > 0.5 → CHROME；低密度長文 → MAIN", () => {
-	const links = "<div><a href='#'>First link label</a> <a href='#'>Second link label</a> <a href='#'>Third link label</a></div>";
+	// 第一個 div 刻意帶一個實質文字節點（「Links:」）：**只由連結與分隔物組成**的 run 自 §P5 起
+	// 會拆成逐連結各一段，那條路的 anchor 是各自的 `<a>`、不再經過這道以 block 為單位的 link-density
+	// 啟發式（拆單元的行為見 pure-link-run.test.mjs）。本條要測的是啟發式本身，故留一個非連結
+	// 文字讓整個 div 仍合成一段——密度照樣遠高於 0.5（49／58 字），訊號②的觸發條件不變。
+	const links = "<div>Links: <a href='#'>First link label</a> <a href='#'>Second link label</a> <a href='#'>Third link label</a></div>";
 	const prose = "<div><p>This is a long enough paragraph of running prose text that contains "
 		+ "<a href='#'>one link</a> but is dominated by plain sentence content well above the length gate.</p></div>";
 	const r = regionsBySource(docOf(links + prose));

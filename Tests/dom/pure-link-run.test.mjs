@@ -43,7 +43,7 @@ function draftPending(segs) {
 // ---------------------------------------------------------------------------
 
 test("L1 `<br>` 分隔的四個短連結各自成段，anchor 是自己的 `<a>`、走就地換字", () => {
-	// 實測樣本：mjtsai.com/blog 左欄（一個 `<p>` 内四個短 `<a>` 以 `<br>` 分隔）。
+	// 實測樣本：mjtsai.com/blog 左欄（一個 `<p>` 內四個短 `<a>` 以 `<br>` 分隔）。
 	const doc = docFrom(`<div id="navbar"><p>`
 		+ `<a href="/blog/">Blog</a> <br />`
 		+ `<a href="/blog/archives/">Archives</a> <br />`
@@ -92,7 +92,7 @@ test("L4 連結之間夾實質文字 ⇒ 不拆（判準是「除連結外只有
 
 test("L5 單一連結的 block 不拆：段數與 anchor 與改動前同值（≥2 才拆）", () => {
 	// 拆了段數不變、唯一差別是 anchor 從 block 換成 `<a>`——那會改動既有頁面的插回落點，
-	// 而好處只在導覽列那種語境成立（該路要的是「`<nav>` 内單一連結」這個另一個條件）。
+	// 而好處只在導覽列那種語境成立（該路要的是「`<nav>` 內單一連結」這個另一個條件）。
 	const doc = docFrom(`<li><a href="/main">Main page</a></li>`);
 	const segs = collectFrom(doc);
 	assert.equal(segs.length, 1);
@@ -118,7 +118,7 @@ test("L12 jump target `<a id=\"top\"></a>` 不計入 ≥2 門檻：仍是「單�
 	assert.equal(segs[0].anchor.insertMode, "after-segment", "不得變成 replace（破壞性寫入）");
 });
 
-test("L13 只包 icon 的 `<a><img></a>` 同樣不計入門檻（側欄／頁腰最常見的形）", () => {
+test("L13 只包 icon 的 `<a><img></a>` 同樣不計入門檻（側欄／頁腳最常見的形）", () => {
 	const doc = docFrom(`<li><a href="/rss"><img src="/i.png"></a><a href="/main">Main page</a></li>`);
 	const segs = collectFrom(doc);
 	const texts = segs.filter((s) => s.kind !== "attribute");
@@ -179,7 +179,7 @@ test("L14 拆出的單元 region 沿用所在 block、不由 `<a>` 自己重算"
 		"無 landmark：沿用整個 div 的 link-density 判定（CHROME）",
 	);
 
-	// landmark 對照：同一個 run 放進 <nav> 與 <main>，region 随所在 landmark 走、不随拆單元變。
+	// landmark 對照：同一個 run 放進 <nav> 與 <main>，region 隨所在 landmark 走、不隨拆單元變。
 	const inNav = collectFrom(docFrom(`<nav>${run}</nav>`));
 	assert.deepEqual(inNav.map((s) => s.region), [koine.Region.CHROME, koine.Region.CHROME]);
 	const inMain = collectFrom(docFrom(`<main>${run}</main>`));
@@ -190,7 +190,7 @@ test("L14 拆出的單元 region 沿用所在 block、不由 `<a>` 自己重算"
 // L7 / L8：拆出來的單元各自過 §P4 的其餘三道閘
 // ---------------------------------------------------------------------------
 
-test("L7 超過長度閘的連結退回並列、短的照舊就地換字（同一個 run 内兩種模式並存）", () => {
+test("L7 超過長度閘的連結退回並列、短的照舊就地換字（同一個 run 內兩種模式並存）", () => {
 	const long = "A navigation label well past the gate";
 	assert.ok(long.length > koine.BUTTON_CLASS_MAX_CHARS, "前提：這條真的超過長度閘");
 	const doc = docFrom(`<p><a href="#">${long}</a><br /><a href="#">Short</a></p>`);
@@ -207,7 +207,7 @@ test("L7 超過長度閘的連結退回並列、短的照舊就地換字（同�
 test("L8 帶元素子代的連結不就地換字：`<a><span>…</span></a>` 退回並列（本支不做透明包裝）", () => {
 	// 維基百科側欄的形狀（`<a><span>Main page</span></a>`）。就地換字用 textContent 整個覆寫、
 	// 會連帶砍掉那顆 `<span>`，故照 §P4 的「只有純文字子代」一律退回並列。要支援得讓寫入目標
-	// 下探到包裝内的文字節點，那是 render 契約的新面、另案。
+	// 下探到包裝內的文字節點，那是 render 契約的新面、另案。
 	const doc = docFrom(`<p><a href="/a"><span>Main page</span></a><br /><a href="/b"><span>Contents</span></a></p>`);
 	const segs = collectFrom(doc);
 	assert.equal(segs.length, 2, "仍逐連結各一段（拆單元與能不能就地換字是兩件事）");
@@ -241,7 +241,7 @@ test("L9 插回：短連結就地換字、`<a>` 與 href 都留著；長連結�
 test("L10 二次採集不自吞：插回後重採段數不變、譯文不被當新原文採回", () => {
 	const doc = docFrom(`<p><a href="/a">Blog</a><br /><a href="/b">Archives</a></p>`);
 	const first = draftPending(collectFrom(doc));
-	assert.equal(first.length, 2, "前提：第一輮真的採到兩段");
+	assert.equal(first.length, 2, "前提：第一輪真的採到兩段");
 	assert.equal(koine.insertTranslations(first).length, 2, "前提：譯文真的寫回去了");
 
 	const second = collectFrom(doc, { walkId: 2 });

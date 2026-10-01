@@ -520,7 +520,7 @@ private final class CollectWebKitTests {
 	///
 	/// 既有的 `body level translate no still collects in real WebKit` 只驗 `<body>` 為根那一形。
 	/// 這條補 `<html>` 為根——`el.translate` IDL 的繼承只在真引擎發生。實作刻意不吃那個 IDL，
-	/// 這條就是防它哪天被悄悄吃進來：真吃進去的話，`<html translate=\"no\">` 會讓整份文件一段
+	/// 這條就是防它哪天被悄悄吃進來：真吃進去的話，`<html translate="no">` 會讓整份文件一段
 	/// 都採不到。
 	@Test
 	private func `page level translate no does not prune in real WebKit`() async throws {

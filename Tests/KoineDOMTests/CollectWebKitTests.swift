@@ -427,7 +427,10 @@ private final class CollectWebKitTests {
 		let html = "<body style='margin:0'><main>\(mainParagraphs)</main>"
 			+ "<div style='height:300px'></div>"
 			+ "<footer><p style='margin:0'>Footer copyright notice text</p>"
-			+ "<p style='margin:0'><a href='#'>About this project</a> <a href='#'>Contact the team</a></p>"
+			// 連結那行刻意帶一個實質文字節點（「Links:」）：只由連結與分隔物組成的 run 自 §P5 起會逐
+			// 連結各成一段，該 block 就由 1 段變 2 段、footer 的段數跟著位移。本條要測的是進場順序與
+			// region 分類，故留一個非連結文字讓該 block 仍合成一段（footer 是 landmark、region 不變）。
+			+ "<p style='margin:0'>Links: <a href='#'>About this project</a> <a href='#'>Contact the team</a></p>"
 			+ "</footer></body>"
 		let webView: WKWebView = .init(frame: CGRect(x: 0, y: 0, width: 1024, height: 768))
 		await load(webView, html: html)

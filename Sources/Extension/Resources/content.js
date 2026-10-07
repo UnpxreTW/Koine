@@ -1000,7 +1000,8 @@ const SegmentState = Object.freeze({
  *
  * **至少兩個有實質文字的連結才拆**。單一連結的 block（`<li><a>…</a></li>`）拆了段數不變，唯一
  * 差別是 anchor 從 block 換成 `<a>`——那會改動既有頁面的插回落點，而好處只在導覽列那種語境才
- * 成立。那條路要的是「`<nav>` 內單一連結」這個額外條件，與本函式的「run 形狀」判準不同源，另案。
+ * 成立。那條路要的是「`<nav>` 內單一連結」這個額外條件，與本函式的「run 形狀」判準不同源，
+ * 另由 `soleNavigationLink` 承擔（形狀判準與本函式共用 `linkRunCandidates`）。
  *
  * 「有實質文字」這個限定不是修飾語而是門檻本身：無文字的 `<a>`（jump target `<a id="top"></a>`、
  * 只包 icon 的 `<a><img></a>`）產不出段，把它算進 ≥2 等於讓上一段那條排除項被繞過。
@@ -1018,6 +1019,21 @@ const SegmentState = Object.freeze({
  * @returns {Element[]|null}  拆出的連結（≥2 且各自有實質文字），不該拆則 null
  */
 function pureLinkRunLinks(buf, labelOf) {
+	const candidates = linkRunCandidates(buf);
+	// 形狀先判、文字後算：prose 與混了其他元素的 run 在形狀那關就回 null，不必為它們各走一趟子樹
+	// （每個候選的 `extractText` 之後在 `makeSegmentFromBuffer` 還會再走一次，這裡只算真的要拆的）。
+	if (!candidates || candidates.length < 2) return null;
+	const links = substantiveLinks(candidates, labelOf);
+	return links.length >= 2 ? links : null;
+}
+
+/**
+ * §P5 的形狀判準：buffer 是否**只由連結與分隔物組成**，是則回傳其中的 `<a>`（文件序、尚未
+ * 依文字過濾），否則 null。分隔物集合見 `pureLinkRunLinks` 的說明，兩條路共用這一份。
+ * @param {Node[]} buf
+ * @returns {Element[]|null}
+ */
+function linkRunCandidates(buf) {
 	/** @type {Element[]} */
 	const candidates = [];
 	for (const n of buf) {
@@ -1032,16 +1048,72 @@ function pureLinkRunLinks(buf, labelOf) {
 		if (el.tagName === "BR") continue;                  // §6.2 的換行＝分隔物
 		return null;                                        // 其餘元素（`<code>`／`<span>`…）⇒ 不拆
 	}
-	// 形狀先判、文字後算：prose 與混了其他元素的 run 在上面就回 null，不必為它們各走一趟子樹
-	// （每個候選的 `extractText` 之後在 `makeSegmentFromBuffer` 還會再走一次，這裡只算真的要拆的）。
-	if (candidates.length < 2) return null;
-	// 無實質文字的連結視同分隔物（與 `<br>` 同級）：它在 `makeSegmentFromBuffer` 會因
-	// `source === ""` 早退、成不了段，計進門檻只會讓「單一連結的 block 不拆」失效。
-	const links = candidates.filter((el) => {
+	return candidates;
+}
+
+/**
+ * 留下有實質文字的連結：判法與 `makeSegmentFromBuffer` 同一條路（`extractText` ＋
+ * `normalizeSource`），理由見 `pureLinkRunLinks` 的 ⚠。無實質文字的連結視同分隔物（與 `<br>`
+ * 同級）：它在 `makeSegmentFromBuffer` 會因 `source === ""` 早退、成不了段。
+ * @param {Element[]} candidates
+ * @param {((node: Node) => NodeLabel)} [labelOf]
+ * @returns {Element[]}
+ */
+function substantiveLinks(candidates, labelOf) {
+	return candidates.filter((el) => {
 		const src = normalizeSource(extractText([el], labelOf).text);
 		return src !== "" && !RE_PUNCT_ONLY.test(src);
 	});
-	return links.length >= 2 ? links : null;
+}
+
+/**
+ * §P5 導覽區內的單一連結：block 的 inline 內容只有**一個**連結（其餘是分隔物）、該連結有實質
+ * 文字、且 block 最近的 landmark 是導覽區時，回傳該連結；否則 null。
+ *
+ * 導覽選單最常見的寫法是一項一個 `<li>`、`<a>` 是 `<li>` 的唯一內容（`<nav><ul><li><a>Home</a>
+ * </li>…`）。這種 block 不經過 `pureLinkRunLinks`（≥2 才拆），整段軸的 anchor 是 `<li>`、而 `<li>`
+ * 不是 button-class ⇒ 每一項都在底下多掛一行不可點的譯文、選單高度加倍。導覽區內的單一連結
+ * 與 run 拆出來的連結單元是同一類東西（一個獨立的導覽項），故比照它走 button-class 的判準。
+ *
+ * **只認導覽區、不認整個 CHROME**：頁首、頁尾、側欄（`<header>`／`<footer>`／`<aside>`）裡的單一
+ * 連結常是一句話的唯一內容（「Privacy policy」「Contact the editorial team」），那裡把 anchor
+ * 從 block 換成 `<a>` 的好處不成立、卻一樣改動既有頁面的插回落點。導覽區的判法與 §6.5 同源：
+ * **最近的** landmark 祖先（含 block 自身）決定，role 先於 tag（`<nav role="main">` 不算導覽區、
+ * `<div role="navigation">` 算）；最近的是 `<main>`／`<article>` 就不算，即使更外層還有 `<nav>`。
+ *
+ * 形狀判準與 `pureLinkRunLinks` 共用 `linkRunCandidates`：形狀上不只一個 `<a>` 的 block（含混了
+ * icon 連結的「icon＋文字連結」）不歸這條路，維持整段一段——那不是「唯一內容」。
+ * @param {Node[]} buf  flush 當下的 buffer（文件序）
+ * @param {Node} blockNode  該 buffer 所屬的 block
+ * @param {((node: Node) => NodeLabel)} [labelOf]  同 `pureLinkRunLinks`，採集路徑一律要傳
+ * @returns {Element|null}
+ */
+function soleNavigationLink(buf, blockNode, labelOf) {
+	const candidates = linkRunCandidates(buf);
+	if (!candidates || candidates.length !== 1) return null;
+	// 導覽區先判、文字後算：絕大多數單一連結的 block 不在導覽區內，不必為它們走一趟子樹。
+	if (!isInNavigationLandmark(blockNode)) return null;
+	const links = substantiveLinks(candidates, labelOf);
+	return links.length === 1 ? links[0] : null;
+}
+
+/**
+ * 最近的 landmark 祖先（含自身）是否為導覽區。判法與 `landmarkRegionOf` 同源：role 只在它是
+ * §6.5 認得的 landmark role 時才覆蓋 tag，其餘 role（`list` 之類）不影響 tag 的判定。
+ * 非 Element（容器錨）或整條祖先鏈都沒有 landmark ⇒ false。
+ * @param {Node} node
+ * @returns {boolean}
+ */
+function isInNavigationLandmark(node) {
+	for (let n = node; n && n.nodeType === NODE_ELEMENT; n = n.parentElement) {
+		const el = /** @type {Element} */ (n);
+		if (landmarkRegionOf(el) === null) continue;
+		const role = typeof el.getAttribute === "function" ? el.getAttribute("role") : null;
+		const r = role ? role.toLowerCase().trim() : "";
+		if (REGION_MAIN_ROLES.has(r) || REGION_CHROME_ROLES.has(r)) return r === "navigation";
+		return el.tagName === "NAV";
+	}
+	return false;
 }
 
 // ============================================================================
@@ -1393,7 +1465,18 @@ function collectSegments(root, ctx, opts = {}) {
 					const region = regionOfBlock(node);
 					for (const a of links) makeSegmentFromBuffer([a], a, { linkUnit: true, region });
 				} else {
-					makeSegmentFromBuffer(buffer, node);
+					// §P5 導覽區內的單一連結：只在它**真的走得到就地換字**時才把 anchor 換成 `<a>`。
+					// 過不了 button-class 判準的（太長、帶元素子代）照舊以 block 當 anchor 整段一段——
+					// 那時換 anchor 唯一的效果是把並列 wrapper 從 block 之後挪到 `<a>` 之後，改動既有
+					// 頁面的插回落點卻換不到任何好處。region 不必像上面那樣由呼叫端給定：這條路只在導覽區
+					// landmark 內成立，`<a>` 與 block 的 region 都由同一個 landmark 決定（chrome）、恆同值。
+					const navLink = soleNavigationLink(buffer, node, labelOf);
+					const navSource = navLink ? normalizeSource(extractText([navLink], labelOf).text) : "";
+					if (navLink && isButtonClassCandidate(navLink, navSource, { linkUnit: true })) {
+						makeSegmentFromBuffer([navLink], navLink, { linkUnit: true });
+					} else {
+						makeSegmentFromBuffer(buffer, node);
+					}
 				}
 			}
 			buffer = [];
@@ -2774,7 +2857,8 @@ const __koineExports = {
 	attributeApplies, attributeOriginalMark, attributeTranslatedMark,
 	GLOBAL_ATTRIBUTE_TARGET,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
-	isContainerNode, resolveInsertRef, resolveObserveTarget, pureLinkRunLinks,
+	isContainerNode, resolveInsertRef, resolveObserveTarget, pureLinkRunLinks, soleNavigationLink,
+	isInNavigationLandmark,
 	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,
 };

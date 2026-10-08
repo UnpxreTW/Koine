@@ -230,6 +230,41 @@ function hasOnlyTextChildren(el) {
 	return true;
 }
 
+/**
+ * §P5 連結單元的透明包裝可穿透的標籤：只有文字排版語義、不帶 icon 也不帶不可翻原子的 inline 元素。
+ * `<code>`／`<time>`（OPAQUE）、`<svg>`／`<img>`（SKIP_SUBTREE）一律不在其中。
+ */
+const TRANSPARENT_WRAPPER_TAGS = new Set(["SPAN", "B", "STRONG", "I", "EM", "SMALL"]);
+
+/**
+ * 原地換字要寫進**哪一顆元素**：元素本身只有純文字子代 ⇒ 它自己；否則沿「恰一個元素子代」往內
+ * 下探，每一層的元素子代都得是 `TRANSPARENT_WRAPPER_TAGS` 內的標籤、旁邊只准有純空白文字節點，
+ * 直到某一層只有純文字子代為止。任何一層不符（兩個元素子代、夾實質文字、標籤不在名單）⇒ `null`。
+ *
+ * 維基百科側欄的 `<a href><span>Main page</span></a>` 由此得到 `<span>`：只覆寫那顆 `<span>` 的
+ * `textContent`，`<a>`（含 `href`）與包裝元素都原樣留著。`<a><span class="sr-only">icon</span>
+ * <span>Main page</span></a>` 這種兩個子代的形狀回 `null`——寫哪一顆都會讓另一顆的內容與譯文
+ * 對不上，維持並列插回。
+ * @param {Element} el
+ * @returns {Element|null}
+ */
+function replaceWriteTarget(el) {
+	let cur = el;
+	while (cur && cur.nodeType === NODE_ELEMENT) {
+		if (hasOnlyTextChildren(cur)) return cur;
+		/** @type {Element|null} */
+		let only = null;
+		for (const child of cur.childNodes) {
+			if (child.nodeType === NODE_TEXT && /^\s*$/u.test(child.nodeValue || "")) continue;
+			if (child.nodeType !== NODE_ELEMENT || only) return null;
+			only = /** @type {Element} */ (child);
+		}
+		if (!only || !TRANSPARENT_WRAPPER_TAGS.has(only.tagName)) return null;
+		cur = only;
+	}
+	return null;
+}
+
 // ============================================================================
 // §2.1 block/inline 判斷收斂核心
 // ============================================================================
@@ -1383,7 +1418,9 @@ function collectSegments(root, ctx, opts = {}) {
 	 *
 	 * `linkUnit` 是 §P5 拆出來的連結單元：它以**所在位置**取代標籤／role 那道閘——一個只由連結
 	 * 組成的 run 裡，每個連結就是一個獨立的導覽項，與按鈕同類。**其餘三道閘一條都不放**：長度、
-	 * 無 block 子、只有純文字子代照樣要過，過不了就照常退回並列。
+	 * 無 block 子照樣要過；「只有純文字子代」對連結單元放寬成「寫入目標下探得到」
+	 * （`replaceWriteTarget`：`<a><span>…</span></a>` 這類透明包裝），下探不到就照常退回並列。
+	 * 按鈕軸不放寬：`<button><span>…</span></button>` 維持原判準。
 	 * @param {Node} blockNode
 	 * @param {string} source  已 normalize 的段落原文（此段的翻譯來源文字）
 	 * @param {{ linkUnit?: boolean }} [opts]
@@ -1393,7 +1430,8 @@ function collectSegments(root, ctx, opts = {}) {
 		if (!blockNode || blockNode.nodeType !== NODE_ELEMENT) return false;
 		if (!opts.linkUnit && !isButtonClassElement(/** @type {Element} */ (blockNode))) return false;
 		if (source.length > BUTTON_CLASS_MAX_CHARS) return false;
-		if (!hasOnlyTextChildren(/** @type {Element} */ (blockNode))) return false;
+		const el = /** @type {Element} */ (blockNode);
+		if (!(opts.linkUnit ? replaceWriteTarget(el) : hasOnlyTextChildren(el))) return false;
 		const label = labels.get(blockNode);
 		const hasBlockDescendant = label ? label.hasBlockDescendant : true; // 未知時保守判有
 		return !hasBlockDescendant;
@@ -1466,7 +1504,7 @@ function collectSegments(root, ctx, opts = {}) {
 					for (const a of links) makeSegmentFromBuffer([a], a, { linkUnit: true, region });
 				} else {
 					// §P5 導覽區內的單一連結：只在它**真的走得到就地換字**時才把 anchor 換成 `<a>`。
-					// 過不了 button-class 判準的（太長、帶元素子代）照舊以 block 當 anchor 整段一段——
+					// 過不了 button-class 判準的（太長、帶寫入目標下探不到的元素子代）照舊以 block 當 anchor 整段一段——
 					// 那時換 anchor 唯一的效果是把並列 wrapper 從 block 之後挪到 `<a>` 之後，改動既有
 					// 頁面的插回落點卻換不到任何好處。region 不必像上面那樣由呼叫端給定：這條路只在導覽區
 					// landmark 內成立，`<a>` 與 block 的 region 都由同一個 landmark 決定（chrome）、恆同值。
@@ -1676,6 +1714,12 @@ function collectSegments(root, ctx, opts = {}) {
 		};
 		// §P4：button-class 是「段的種類」分類，保留供觀測／後續規則用；插回行為看 insertMode。
 		if (buttonClass) seg.kind = "button";
+		// §P5 透明包裝：寫入目標不是 block 自己時記在 anchor 上，插回時拿它核「結構沒變」。
+		// 只在下探過的連結單元才記；其餘 replace 段的寫入目標恆為 block、anchor 形狀不變。
+		if (insertMode === "replace" && opts.linkUnit) {
+			const target = replaceWriteTarget(/** @type {Element} */ (blockNode));
+			if (target && target !== blockNode) seg.anchor.writeTarget = target;
+		}
 		// replaceSnapshot 存採集當下「未過濾」的原始 textContent（非 source——source 已被 extractText
 		// 過濾掉 SKIP_SUBTREE 子代／ruby 注音等）：插回時只需拿它與插回當下的 textContent 做同一
 		// property 兩次讀值的字面比對，不必重放 collect() 的過濾規則、不會有兩套還原邏輯彼此漂移的風險。
@@ -2334,13 +2378,16 @@ function insertTranslations(segments, opts = {}) {
 			// textContent 字串相等不保證結構沒變：插入一個不含文字的元素子代（如 icon svg）不會讓
 			// textContent 出現差異，但仍會被緊接著的 textContent 覆寫整個砍掉。插回前必須用採集時
 			// 同一套「只有純文字子代」判準重新核一次目前的即時結構，結構已變同樣視為 drift、放棄覆寫。
-			if (!hasOnlyTextChildren(/** @type {Element} */ (block))) continue;
+			// 透明包裝（`anchor.writeTarget`，見 replaceWriteTarget）同一道檢查：此刻下探到的寫入目標
+			// 必須正是採集當下那一顆。沒記的段寫入目標就是 block 自己，與「只有純文字子代」等價。
+			const target = seg.anchor.writeTarget || block;
+			if (replaceWriteTarget(/** @type {Element} */ (block)) !== target) continue;
 			// KO-7 原文存 data 屬性（純資料、無 AT 影響）。這裡刻意存**未過濾的 snapshot**、不是
 			// seg.source——它是還原用的逐字副本，連原始空白一起留住才還原得回去。
 			// ⚠ 給未來寫還原路徑的人：內文一律讀 `data-koine-original`（逐字），`title` 另有自己的
 			// 一份備份（`data-koine-original-title`，見屬性軸）——兩條軸各存各的、不互相代讀。
 			block.setAttribute("data-koine-original", snapshot);
-			block.textContent = text;                               // 原地換字
+			target.textContent = text;                              // 原地換字（包裝元素原樣留著）
 			// KO-7 防自吞標記：值＝剛寫進去的譯文逐字副本。classifyNode [1] 拿它跟當下的
 			// textContent 比，仍含它才跳過（站台追加子節點時譯文還在原位、照舊跳過）；標記消失、
 			// 或整段被換掉到不再含這份副本，才視為未譯、下次採集重新產生待譯段。
@@ -2858,7 +2905,7 @@ const __koineExports = {
 	GLOBAL_ATTRIBUTE_TARGET,
 	makeContext, classifyNode, isShallowBlock, classifyRegion, heuristicRegion,
 	isContainerNode, resolveInsertRef, resolveObserveTarget, pureLinkRunLinks, soleNavigationLink,
-	isInNavigationLandmark,
+	isInNavigationLandmark, replaceWriteTarget,
 	walkAndLabel, collectSegments, extractText, normalizeSource, normalizeSourceWithMap, makeId,
 	insertTranslations, observeSegments, translateSegment, buildBridgeMessage,
 };

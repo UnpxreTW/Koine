@@ -231,15 +231,30 @@ function hasOnlyTextChildren(el) {
 }
 
 /**
- * §P5 連結單元的透明包裝可穿透的標籤：只有文字排版語義、不帶 icon 也不帶不可翻原子的 inline 元素。
+ * §P5 連結單元的透明包裝可穿透的標籤：只有文字排版語義、不帶不可翻原子的 inline 元素。
  * `<code>`／`<time>`（OPAQUE）、`<svg>`／`<img>`（SKIP_SUBTREE）一律不在其中。
+ * `<i>` 也不在其中：它是 icon 字型 ligature 最常見的載體（`<i class="material-icons">home</i>`）。
+ * 名單只看標籤名，`<span>` 同樣可能是 ligature icon，所以另由 `isTransparentWrapper` 要求包裝不帶 class。
  */
-const TRANSPARENT_WRAPPER_TAGS = new Set(["SPAN", "B", "STRONG", "I", "EM", "SMALL"]);
+const TRANSPARENT_WRAPPER_TAGS = new Set(["SPAN", "B", "STRONG", "EM", "SMALL"]);
+
+/**
+ * 包裝元素能不能穿透：標籤在 `TRANSPARENT_WRAPPER_TAGS` 內，且沒有非空白的 `class`。
+ * icon 字型（`material-icons`、`material-symbols-*`、`fa-*`……）一律靠 class 掛上去，ligature 文字
+ * 本身看起來就是普通英文字（`home`、`search`），採集時無從分辨；把譯文寫進去會讓 icon 變成一串中文字，
+ * 原文只剩 anchor 上的備份。class 命名沒有可窮舉的慣例，所以不比對名單，帶 class 一律不穿透、退回並列。
+ * @param {Element} el
+ */
+function isTransparentWrapper(el) {
+	if (!TRANSPARENT_WRAPPER_TAGS.has(el.tagName)) return false;
+	return !/\S/u.test(el.getAttribute("class") || "");
+}
 
 /**
  * 原地換字要寫進**哪一顆元素**：元素本身只有純文字子代 ⇒ 它自己；否則沿「恰一個元素子代」往內
- * 下探，每一層的元素子代都得是 `TRANSPARENT_WRAPPER_TAGS` 內的標籤、旁邊只准有純空白文字節點，
- * 直到某一層只有純文字子代為止。任何一層不符（兩個元素子代、夾實質文字、標籤不在名單）⇒ `null`。
+ * 下探，每一層的元素子代都得過 `isTransparentWrapper`（標籤在名單內、不帶 class）、旁邊只准有純空白
+ * 文字節點，直到某一層只有純文字子代為止。任何一層不符（兩個元素子代、夾實質文字、標籤不在名單、
+ * 包裝帶 class）⇒ `null`。
  *
  * 維基百科側欄的 `<a href><span>Main page</span></a>` 由此得到 `<span>`：只覆寫那顆 `<span>` 的
  * `textContent`，`<a>`（含 `href`）與包裝元素都原樣留著。`<a><span class="sr-only">icon</span>
@@ -259,7 +274,7 @@ function replaceWriteTarget(el) {
 			if (child.nodeType !== NODE_ELEMENT || only) return null;
 			only = /** @type {Element} */ (child);
 		}
-		if (!only || !TRANSPARENT_WRAPPER_TAGS.has(only.tagName)) return null;
+		if (!only || !isTransparentWrapper(only)) return null;
 		cur = only;
 	}
 	return null;

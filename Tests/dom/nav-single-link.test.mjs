@@ -145,11 +145,18 @@ test("N7 超過長度閘的連結不動：anchor 不換、並列 wrapper 照舊�
 	assertUntouched(doc, collectFrom(doc));
 });
 
-test("N8 帶元素子代的連結不動：`<a><span>…</span></a>`（透明包裝另案）", () => {
-	// 維基百科側欄的形狀。就地換字用 textContent 整個覆寫、會連帶砍掉那顆 `<span>`；
-	// 換 anchor 又換不到就地換字 ⇒ 唯一效果是挪動並列 wrapper 的落點，故一個字都不動。
-	const doc = docFrom(`<nav><ul><li><a href="/"><span>Main page</span></a></li></ul></nav>`);
-	assertUntouched(doc, collectFrom(doc));
+test("N8 帶元素子代的連結：透明包裝走就地換字、寫入目標下探不到的不動", () => {
+	// 維基百科側欄的形狀：寫入目標下探到 `<span>` ⇒ anchor 換成 `<a>`、走就地換字。
+	const wrapped = docFrom(`<nav><ul><li><a href="/"><span>Main page</span></a></li></ul></nav>`);
+	const segs = collectFrom(wrapped);
+	assert.equal(segs.length, 1);
+	assertSame(segs[0].anchor.block, wrapped.querySelector("a"));
+	assert.equal(segs[0].anchor.insertMode, "replace");
+	assertSame(segs[0].anchor.writeTarget, wrapped.querySelector("span"));
+	// 兩個元素子代（被濾掉的 icon 文字＋真文字）：寫哪一顆都對不上 ⇒ 換 anchor 換不到就地換字，
+	// 唯一效果是挪動並列 wrapper 的落點，故一個字都不動。
+	const twoKids = docFrom(`<nav><ul><li><a href="/"><span class="sr-only">icon</span><span>Main page</span></a></li></ul></nav>`);
+	assertUntouched(twoKids, collectFrom(twoKids));
 });
 
 test("N9 不是唯一內容的不動：連結旁有實質文字、或與 icon 連結並排", () => {

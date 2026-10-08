@@ -71,6 +71,45 @@ test("W1 replaceWriteTarget 逐形：下探得到回最內層、下探不到回 
 });
 
 // ---------------------------------------------------------------------------
+// W9–W10：icon 字型的 ligature 包裝不穿透
+// ---------------------------------------------------------------------------
+
+// icon 字型把圖形掛在 class 上、ligature 文字看起來就是普通英文字。寫入目標若下探進去，譯文會把
+// icon 換成一串中文字，原文只剩 anchor 上的備份，無從還原。
+const ICON_LINKS = {
+	"material-icons <i>": `<i class="material-icons">home</i>`,
+	"material-symbols <span>": `<span class="material-symbols-outlined">search</span>`,
+	"無 class 的 <i>": `<i>home</i>`,
+};
+
+test("W9 replaceWriteTarget：icon 字型包裝與 `<i>` 回 null，無 class 的 `<span>` 照常下探", () => {
+	for (const [name, inner] of Object.entries(ICON_LINKS)) {
+		const doc = docFrom(`<a id="x" href="/">${inner}</a>`);
+		assertSame(koine.replaceWriteTarget(doc.getElementById("x")), null, name);
+	}
+	const blankClass = docFrom(`<a id="x" href="/"><span id="in" class=" ">Main page</span></a>`);
+	assertSame(koine.replaceWriteTarget(blankClass.getElementById("x")), blankClass.getElementById("in"),
+		"只有空白的 class 視同沒有");
+	const deep = docFrom(`<a id="x" href="/"><span><span class="fa-solid">Main page</span></span></a>`);
+	assertSame(koine.replaceWriteTarget(deep.getElementById("x")), null, "第二層帶 class 同樣擋");
+});
+
+test("W10 導覽區的 icon 連結：退回並列、插回後 icon 原樣", () => {
+	for (const [name, inner] of Object.entries(ICON_LINKS)) {
+		const doc = docFrom(`<nav><ul><li><a href="/">${inner}</a></li></ul></nav>`);
+		const icon = doc.querySelector("a").firstElementChild;
+		const before = icon.textContent;
+		const segs = draftPending(collectFrom(doc).filter((s) => s.kind !== "attribute"));
+		assert.equal(segs.length, 1, `${name}：前提＝產出一段`);
+		assert.equal(segs[0].anchor.insertMode, "after-segment", `${name}：不就地換字`);
+		assertSame(segs[0].anchor.writeTarget, undefined, `${name}：不記寫入目標`);
+		koine.insertTranslations(segs);
+		assert.equal(icon.textContent, before, `${name}：icon 的 ligature 文字不被覆寫`);
+		assert.equal(doc.querySelector("a").hasAttribute("data-koine-translated"), false, `${name}：<a> 不留就地換字標記`);
+	}
+});
+
+// ---------------------------------------------------------------------------
 // W2–W4：側欄形狀的採集、插回與二次採集
 // ---------------------------------------------------------------------------
 

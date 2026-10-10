@@ -204,14 +204,15 @@ test("L7 超過長度閘的連結退回並列、短的照舊就地換字（同�
 	assert.equal(segs[1].anchor.insertMode, "replace", "短連結不受同伴影響");
 });
 
-test("L8 帶元素子代的連結不就地換字：`<a><span>…</span></a>` 退回並列（本支不做透明包裝）", () => {
-	// 維基百科側欄的形狀（`<a><span>Main page</span></a>`）。就地換字用 textContent 整個覆寫、
-	// 會連帶砍掉那顆 `<span>`，故照 §P4 的「只有純文字子代」一律退回並列。要支援得讓寫入目標
-	// 下探到包裝內的文字節點，那是 render 契約的新面、另案。
+test("L8 透明包裝的連結走就地換字、寫入目標下探到包裝內：`<a><span>…</span></a>`", () => {
+	// 維基百科側欄的形狀（`<a><span>Main page</span></a>`）。寫入目標由 replaceWriteTarget 下探到
+	// `<span>`，插回只覆寫它、`<a>` 與包裝都留著（插回面的完整斷言見 link-wrapper.test.mjs）。
 	const doc = docFrom(`<p><a href="/a"><span>Main page</span></a><br /><a href="/b"><span>Contents</span></a></p>`);
 	const segs = collectFrom(doc);
-	assert.equal(segs.length, 2, "仍逐連結各一段（拆單元與能不能就地換字是兩件事）");
-	assert.deepEqual(segs.map((s) => s.anchor.insertMode), ["after-segment", "after-segment"]);
+	const spans = [...doc.querySelectorAll("span")];
+	assert.equal(segs.length, 2, "仍逐連結各一段");
+	assert.deepEqual(segs.map((s) => s.anchor.insertMode), ["replace", "replace"]);
+	for (const [i, seg] of segs.entries()) assertSame(seg.anchor.writeTarget, spans[i], `第 ${i + 1} 段的寫入目標是包裝 <span>`);
 });
 
 // ---------------------------------------------------------------------------

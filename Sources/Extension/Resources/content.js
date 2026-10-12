@@ -606,6 +606,10 @@ function classifyNode(node, ctx) {
 
 	// [2] 硬標籤黑名單（Set.has O(1)、整棵剪枝）；MathML 命中根即整棵跳
 	if (SKIP_SUBTREE_TAGS.has(tag) || tag === "MATH") return { disp: "SKIP_SUBTREE", cs: null };
+	// <slot> 的子代是**後備內容**：有節點指派進來時畫面上顯示的是那些節點、後備內容不渲染。
+	// 被指派的節點本身住在宿主的 light DOM、由 light 走訪採，這裡整棵跳過才不會把看不到的後備
+	// 文字送翻、也不會讓它的 block 訊號上傳給宿主。沒有指派（含不在 shadow 樹內的 <slot>）照舊下行。
+	if (tag === "SLOT" && slotHasAssignedNodes(el)) return { disp: "SKIP_SUBTREE", cs: null };
 
 	// [3] PRE → SKIP；CODE（祖先無 PRE）→ OPAQUE
 	if (tag === "PRE") return { disp: "SKIP_SUBTREE", cs: null };
@@ -718,6 +722,24 @@ function hasSkipClass(el) {
 function isPageLevelElement(el) {
 	const doc = el.ownerDocument;
 	return !!doc && (el === doc.documentElement || el === doc.body);
+}
+
+/**
+ * `<slot>` 是否有節點指派進來（有＝後備內容不渲染）。不支援 `assignedNodes` 的環境一律回 false、
+ * 照舊走後備內容——寧可多採一段看不到的字，不要把整個 slot 的內容丟掉。
+ *
+ * 只認「父節點不是這顆 slot」的回傳節點：指派進來的節點必定是宿主的 light 子代，而有的實作
+ * 在沒有指派時回的是 slot 自己的後備子節點（攤平形），只數長度會把它誤判成有指派。
+ * @param {Element} el
+ * @returns {boolean}
+ */
+function slotHasAssignedNodes(el) {
+	const assigned = /** @type {any} */ (el).assignedNodes;
+	if (typeof assigned !== "function") return false;
+	for (const n of assigned.call(el)) {
+		if (n.parentNode !== el) return true;
+	}
+	return false;
 }
 
 /** §3.5 translate="no" / .notranslate，大容器降級不尊重。 */
@@ -1275,9 +1297,19 @@ function walkAndLabel(root, ctx) {
 		if (el.shadowRoot) {
 			// shadow 內的段沿用宿主元素的有效 lang（`closest` 不跨 shadow 邊界、下行增量會，
 			// 方向上更接近使用者對「這塊是什麼語言」的直覺）。
+			let shadowHasBlockChild = false;
 			for (const child of childNodes(el.shadowRoot)) {
-				if (visit(child, region, nearHint, nearLang)) hasBlockChild = true;
+				if (visit(child, region, nearHint, nearLang)) shadowHasBlockChild = true;
 			}
+			if (shadowHasBlockChild) hasBlockChild = true;
+			// shadow root 自己也記一筆：第二遍會把它當巢狀容器走（見 collect 尾端），頂層 run 的
+			// anchor 就是它，段 region 要從這筆讀到宿主所在的區。值與「以這棵 shadow 樹為根」時
+			// 種子自宿主含自身上溯得到的相同，兩條路採出同一組標記。
+			labels.set(el.shadowRoot, {
+				disp: "WALK", cs: null, isBlock: shadowHasBlockChild,
+				hasBlockDescendant: shadowHasBlockChild, transparent: false,
+				lang: nearLang, region, regionHint: nearHint,
+			});
 		}
 
 		const shallowBlock = isShallowBlock(el, cs);
@@ -1571,6 +1603,14 @@ function collectSegments(root, ctx, opts = {}) {
 			collect(child);
 		}
 		flushHere();
+		// §5 C3：宿主帶 open shadow root 時，light 子代走完後再把 shadow 樹當巢狀容器走一輪。
+		// 兩邊在渲染樹上不相鄰（shadow 內容取代宿主的 light 內容、light 節點只經 <slot> 露面），
+		// 上面先 flush、shadow 頂層 run 另起一段，不與 light 的 run 併在一起。頂層 run 的 anchor
+		// 是 shadow root 本身，插回與觀察由 resolveInsertRef／resolveObserveTarget 承接。
+		// closed shadow root 的 `shadowRoot` 為 null，結構上走不進去。
+		if (node.nodeType === NODE_ELEMENT && /** @type {Element} */ (node).shadowRoot) {
+			collect(/** @type {Element} */ (node).shadowRoot);
+		}
 	}
 
 	/**
@@ -1853,8 +1893,9 @@ function collectSegments(root, ctx, opts = {}) {
 	// 這類主流寫法整份文件歸零——現由 `isPageLevelElement` 以**身分**豁免（§3.5／§3.6），三種根同
 	// 輸出；② 容器頂層裸文字／inline 的非 Element anchor——現由上述兩支解析器承接。
 	//
-	// 仍屬另案的是「第二遍走訪主動進 `el.shadowRoot`」（§5 C3）：本閘只保證 shadow 樹**當根**時
-	// 管線是通的，不代表以 `<body>` 為根時採得到 shadow 內的文字（見 childNodes）。
+	// 第二遍走訪也會主動進 `el.shadowRoot`（§5 C3，見 collect 尾端）：以 `<body>` 為根時，
+	// block 宿主的 shadow 樹當巢狀容器走，頂層 run 的 anchor 一樣是 shadow root、同走上述兩支解析器。
+	// inline 宿主不在此列——它整顆進 buffer、由 extractText 抽字，而 extractText 不跨 shadow 邊界。
 	if (labelOf(root).disp === "WALK") collect(root);
 	return segments;
 }
